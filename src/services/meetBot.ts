@@ -2,6 +2,7 @@ import { chromium, type Browser, type BrowserContext, type Page } from "playwrig
 import path from "path";
 import fs from "fs";
 import { logger } from "../utils/logger.js";
+import { transcribeAudioFile } from "./deepgramService.js";
 
 export interface TranscriptSegment {
   timestamp: string;
@@ -14,9 +15,12 @@ export interface BotSession {
   meetUrl: string;
   status: "joining" | "in-meeting" | "processing" | "completed" | "error";
   transcript: TranscriptSegment[];
+  prd?: string;
+  roadmap?: string;
   startedAt: Date;
   endedAt?: Date;
   error?: string;
+  audioFilePath?: string;
   /** Internal — used to signal the bot to stop */
   _stopRequested: boolean;
   _browser?: Browser;
@@ -24,99 +28,213 @@ export interface BotSession {
   _context?: BrowserContext;
 }
 
-/**
- * Raw JavaScript string evaluated in the browser context.
- * Keep this as a string so tsx/esbuild cannot add helper references that are
- * unavailable inside the page.
- */
-const CAPTION_OBSERVER_SCRIPT = `
+const DEFAULT_FAKE_VIDEO_PATH = path.resolve("assets", "bot-background.y4m");
+
+const AUDIO_RECORDER_INIT_SCRIPT = `
 (function() {
-  window.__captionData = [];
-  window.__lastCaptionText = "";
+  if (window.__meetAudioCaptureInstalled) return;
+  window.__meetAudioCaptureInstalled = true;
 
-  var findCaptionContainer = function() {
-    var ariaLive = document.querySelector('[aria-live="polite"]');
-    if (ariaLive) return ariaLive;
+  var remoteAudioTracks = [];
+  var recorder = null;
+  var recorderMimeType = "";
+  var trackWaiters = [];
+  var recordingStream = new MediaStream();
 
-    var containers = document.querySelectorAll("div[jscontroller]");
-    for (var i = 0; i < containers.length; i++) {
-      var el = containers[i];
-      var text = el.textContent || "";
-      if (text.length > 0 && text.length < 500 && el.children.length > 0) {
-        var styles = window.getComputedStyle(el);
-        if (styles.position === "fixed" || styles.position === "absolute") {
-          return el;
-        }
+  function pickMimeType() {
+    var candidates = [
+      "audio/webm;codecs=opus",
+      "audio/webm",
+    ];
+
+    if (!window.MediaRecorder || !MediaRecorder.isTypeSupported) return "";
+    for (var i = 0; i < candidates.length; i++) {
+      if (MediaRecorder.isTypeSupported(candidates[i])) return candidates[i];
+    }
+    return "";
+  }
+
+  function toBase64(bytes) {
+    var chunkSize = 0x8000;
+    var parts = [];
+    for (var i = 0; i < bytes.length; i += chunkSize) {
+      parts.push(String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize)));
+    }
+    return btoa(parts.join(""));
+  }
+
+  async function sendBlob(blob) {
+    if (!blob || blob.size === 0 || !window.__sendMeetAudioChunk) return;
+    var buffer = await blob.arrayBuffer();
+    await window.__sendMeetAudioChunk({
+      base64: toBase64(new Uint8Array(buffer)),
+      mimeType: blob.type || recorderMimeType || "audio/webm",
+    });
+  }
+
+  function resolveTrackWaiters() {
+    while (trackWaiters.length > 0) {
+      trackWaiters.shift()(true);
+    }
+  }
+
+  function addRemoteAudioTrack(track) {
+    if (!track || track.kind !== "audio") return;
+    if (remoteAudioTracks.indexOf(track) !== -1) return;
+
+    remoteAudioTracks.push(track);
+    recordingStream.addTrack(track);
+    resolveTrackWaiters();
+  }
+
+  function handleTrackEvent(event) {
+    addRemoteAudioTrack(event.track);
+    if (event.streams) {
+      for (var i = 0; i < event.streams.length; i++) {
+        var tracks = event.streams[i].getAudioTracks();
+        for (var j = 0; j < tracks.length; j++) addRemoteAudioTrack(tracks[j]);
       }
     }
-    return null;
-  };
+  }
 
-  var extractSpeakerAndText = function(node) {
-    var children = Array.from(node.children);
-    if (children.length >= 2) {
-      var possibleSpeaker = (children[0].textContent || "").trim();
-      var possibleText = children.slice(1).map(function(c) { return (c.textContent || "").trim(); }).join(" ");
-      if (possibleSpeaker && possibleText) {
-        return { speaker: possibleSpeaker, text: possibleText };
-      }
+  function patchPeerConnection(name) {
+    var OriginalPeerConnection = window[name];
+    if (!OriginalPeerConnection || OriginalPeerConnection.__meetAudioPatched) return;
+
+    function PatchedPeerConnection() {
+      var pc = new (Function.prototype.bind.apply(
+        OriginalPeerConnection,
+        [null].concat(Array.prototype.slice.call(arguments))
+      ))();
+      pc.addEventListener("track", handleTrackEvent);
+      return pc;
     }
-    return { speaker: "Unknown", text: (node.textContent || "").trim() };
+
+    PatchedPeerConnection.prototype = OriginalPeerConnection.prototype;
+    Object.setPrototypeOf(PatchedPeerConnection, OriginalPeerConnection);
+    PatchedPeerConnection.__meetAudioPatched = true;
+    window[name] = PatchedPeerConnection;
+  }
+
+  patchPeerConnection("RTCPeerConnection");
+  patchPeerConnection("webkitRTCPeerConnection");
+
+  window.__waitForMeetAudioTrack = function(timeoutMs) {
+    if (remoteAudioTracks.length > 0) return Promise.resolve(true);
+    return new Promise(function(resolve) {
+      var timer = setTimeout(function() {
+        var index = trackWaiters.indexOf(resolve);
+        if (index >= 0) trackWaiters.splice(index, 1);
+        resolve(false);
+      }, timeoutMs);
+
+      trackWaiters.push(function(result) {
+        clearTimeout(timer);
+        resolve(result);
+      });
+    });
   };
 
-  var pollInterval = setInterval(function() {
-    var container = findCaptionContainer();
-    if (!container) return;
+  window.__startMeetAudioRecording = function() {
+    if (recorder && recorder.state !== "inactive") {
+      return {
+        started: true,
+        audioTracks: recordingStream.getAudioTracks().length,
+        mimeType: recorderMimeType || recorder.mimeType,
+      };
+    }
 
-    clearInterval(pollInterval);
+    if (recordingStream.getAudioTracks().length === 0) {
+      return {
+        started: false,
+        audioTracks: 0,
+        error: "No remote Meet audio tracks were detected.",
+      };
+    }
 
-    var observer = new MutationObserver(function() {
-      var captionElements = container.querySelectorAll("div[class]");
-      var allText = (container.textContent || "").trim();
+    recorderMimeType = pickMimeType();
+    recorder = recorderMimeType
+      ? new MediaRecorder(recordingStream, { mimeType: recorderMimeType })
+      : new MediaRecorder(recordingStream);
+    recorder.ondataavailable = function(event) {
+      sendBlob(event.data).catch(function(error) {
+        console.error("Failed to send Meet audio chunk", error);
+      });
+    };
+    recorder.start(2000);
 
-      if (allText && allText !== window.__lastCaptionText) {
-        window.__lastCaptionText = allText;
+    return {
+      started: true,
+      audioTracks: recordingStream.getAudioTracks().length,
+      mimeType: recorderMimeType || recorder.mimeType || "audio/webm",
+    };
+  };
 
-        if (captionElements.length > 0) {
-          for (var j = 0; j < captionElements.length; j++) {
-            var result = extractSpeakerAndText(captionElements[j]);
-            if (result.text) {
-              window.__captionData.push({
-                timestamp: new Date().toISOString(),
-                speaker: result.speaker,
-                text: result.text,
-              });
-            }
-          }
-        } else {
-          window.__captionData.push({
-            timestamp: new Date().toISOString(),
-            speaker: "Unknown",
-            text: allText,
-          });
-        }
+  window.__stopMeetAudioRecording = function() {
+    return new Promise(function(resolve) {
+      if (!recorder || recorder.state === "inactive") {
+        resolve({
+          stopped: true,
+          audioTracks: recordingStream.getAudioTracks().length,
+          mimeType: recorderMimeType || "audio/webm",
+        });
+        return;
       }
-    });
 
-    observer.observe(container, {
-      childList: true,
-      subtree: true,
-      characterData: true,
+      var didResolve = false;
+      function finish() {
+        if (didResolve) return;
+        didResolve = true;
+        resolve({
+          stopped: true,
+          audioTracks: recordingStream.getAudioTracks().length,
+          mimeType: recorderMimeType || recorder.mimeType || "audio/webm",
+        });
+      }
+
+      recorder.onstop = finish;
+      recorder.requestData();
+      recorder.stop();
+      setTimeout(finish, 5000);
     });
-  }, 2000);
+  };
 })();
 `;
 
-const DEFAULT_FAKE_VIDEO_PATH = path.resolve("assets", "bot-background.y4m");
+interface AudioChunkPayload {
+  base64: string;
+  mimeType?: string;
+}
+
+interface AudioCaptureController {
+  filePath: string;
+  getBytesWritten: () => number;
+  getContentType: () => string;
+  close: () => Promise<void>;
+}
+
+interface AudioRecorderStartResult {
+  started: boolean;
+  audioTracks: number;
+  mimeType?: string;
+  error?: string;
+}
+
+interface AudioRecorderStopResult {
+  stopped: boolean;
+  audioTracks: number;
+  mimeType?: string;
+}
 
 /**
- * Launches a Playwright browser, joins the Google Meet call, enables captions,
- * and accumulates the transcript until the meeting ends or stop is requested.
+ * Launches a Playwright browser, joins the Google Meet call, records remote
+ * meeting audio, and transcribes it with Deepgram after the meeting ends.
  */
 export async function startMeetBot(
   session: BotSession,
   authStatePath: string,
   botDisplayName: string,
+  deepgramApiKey: string,
 ): Promise<TranscriptSegment[]> {
   const ctx = "MeetBot";
   const resolvedAuthPath = path.resolve(authStatePath);
@@ -167,6 +285,7 @@ export async function startMeetBot(
 
   const page = await context.newPage();
   session._page = page;
+  const audioCapture = await setupAudioCapture(page, session);
 
   try {
     // ── Navigate to the Meet URL ───────────────────────────
@@ -269,16 +388,30 @@ export async function startMeetBot(
     session.status = "in-meeting";
     logger.info(ctx, "Successfully joined the meeting");
 
-    // ── Enable captions ────────────────────────────────────
-    await enableCaptions(page);
+    // ── Start audio recording for Deepgram ─────────────────
+    logger.info(ctx, "Starting meeting audio capture...");
+    const recordingStartedAt = new Date();
+    await startAudioRecording(page);
 
-    // ── Start caption scraping ─────────────────────────────
-    logger.info(ctx, "Starting caption capture...");
-    const transcript = await scrapeCaptions(page, session);
+    await waitForMeetingToEnd(page, session);
+
+    const recording = await stopAudioRecording(page, audioCapture);
+    logger.info(ctx, "Meeting ended. Audio captured.", {
+      audioFilePath: recording.filePath,
+      bytes: recording.bytes,
+      contentType: recording.contentType,
+    });
+
+    const transcript = await transcribeAudioFile(
+      deepgramApiKey,
+      recording.filePath,
+      recording.contentType,
+      recordingStartedAt,
+    );
 
     session.transcript = transcript;
     session.endedAt = new Date();
-    logger.info(ctx, "Meeting ended. Transcript captured.", {
+    logger.info(ctx, "Transcript captured.", {
       segments: transcript.length,
     });
 
@@ -290,6 +423,9 @@ export async function startMeetBot(
     session.error = message;
     throw err;
   } finally {
+    await audioCapture.close().catch(() => {
+      // Ignore close errors
+    });
     try {
       await browser.close();
     } catch {
@@ -298,77 +434,99 @@ export async function startMeetBot(
   }
 }
 
-/**
- * Attempts to enable closed captions / subtitles in the Meet UI.
- */
-async function enableCaptions(page: Page): Promise<void> {
-  const ctx = "MeetBot:Captions";
+async function setupAudioCapture(page: Page, session: BotSession): Promise<AudioCaptureController> {
+  const ctx = "MeetBot:Audio";
+  const filePath = path.resolve("recordings", `${session.id}.webm`);
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  session.audioFilePath = filePath;
 
-  // Try multiple selector strategies for the CC / captions button
-  const captionSelectors = [
-    'button[aria-label*="captions" i]',
-    'button[aria-label*="subtitle" i]',
-    'button[aria-label*="closed caption" i]',
-    '[data-tooltip*="caption" i]',
-  ];
+  let bytesWritten = 0;
+  let contentType = "audio/webm";
+  let closed = false;
+  const writer = fs.createWriteStream(filePath);
 
-  for (const selector of captionSelectors) {
-    try {
-      const btn = page.locator(selector).first();
-      if (await btn.isVisible({ timeout: 3000 })) {
-        await btn.click();
-        logger.info(ctx, "Captions enabled", { selector });
-        await page.waitForTimeout(1000);
-        return;
-      }
-    } catch {
-      continue;
-    }
-  }
+  await page.exposeFunction("__sendMeetAudioChunk", (payload: AudioChunkPayload) => {
+    if (closed) return;
 
-  // Fallback: try through the "More options" (three-dot) menu
-  logger.info(ctx, "Trying to enable captions via More Options menu...");
-  try {
-    const moreBtn = page.locator(
-      'button[aria-label*="more" i], button[aria-label*="options" i]',
-    ).first();
-    if (await moreBtn.isVisible({ timeout: 3000 })) {
-      await moreBtn.click();
-      await page.waitForTimeout(1000);
+    const chunk = Buffer.from(payload.base64, "base64");
+    bytesWritten += chunk.length;
+    contentType = payload.mimeType ?? contentType;
+    writer.write(chunk);
+  });
 
-      const captionMenuItem = page.locator(
-        'li:has-text("Captions"), [role="menuitem"]:has-text("caption"), span:has-text("Turn on captions")',
-      ).first();
-      if (await captionMenuItem.isVisible({ timeout: 3000 })) {
-        await captionMenuItem.click();
-        logger.info(ctx, "Captions enabled via More Options menu");
-        await page.waitForTimeout(1000);
-        return;
-      }
-    }
-  } catch {
-    // Continue with warning
-  }
+  await page.addInitScript({ content: AUDIO_RECORDER_INIT_SCRIPT });
+  logger.info(ctx, "Audio capture installed", { filePath });
 
-  logger.warn(ctx, "Could not enable captions automatically. Please enable them manually in the meeting.");
+  return {
+    filePath,
+    getBytesWritten: () => bytesWritten,
+    getContentType: () => contentType.split(";")[0],
+    close: () =>
+      new Promise((resolve, reject) => {
+        if (closed) {
+          resolve();
+          return;
+        }
+        closed = true;
+        writer.once("error", reject);
+        writer.end(resolve);
+      }),
+  };
 }
 
-/**
- * Installs a MutationObserver in the page and polls for caption data until the
- * meeting ends.
- */
-async function scrapeCaptions(page: Page, session: BotSession): Promise<TranscriptSegment[]> {
-  const ctx = "MeetBot:Scraper";
+async function startAudioRecording(page: Page): Promise<void> {
+  const ctx = "MeetBot:Audio";
+  const hasAudioTrack = await page.evaluate(
+    "window.__waitForMeetAudioTrack ? window.__waitForMeetAudioTrack(30000) : false",
+  ) as boolean;
 
-  // Evaluate directly through the browser protocol. Google Meet enforces
-  // Trusted Types, which blocks addScriptTag({ content }) because it assigns
-  // raw text to an HTMLScriptElement.
-  await page.evaluate(CAPTION_OBSERVER_SCRIPT);
+  if (!hasAudioTrack) {
+    logger.warn(ctx, "No remote audio track detected before timeout; attempting to start recorder anyway");
+  }
 
-  logger.info(ctx, "Caption observer injected, waiting for meeting to end...");
+  const result = await page.evaluate(
+    "window.__startMeetAudioRecording ? window.__startMeetAudioRecording() : { started: false, audioTracks: 0, error: 'Audio recorder was not installed' }",
+  ) as AudioRecorderStartResult;
 
-  // Poll until the meeting ends or stop is requested
-  const transcript: TranscriptSegment[] = [];
+  if (!result.started) {
+    throw new Error(result.error ?? "Could not start meeting audio recording.");
+  }
+
+  logger.info(ctx, "Audio recording started", {
+    audioTracks: result.audioTracks,
+    mimeType: result.mimeType,
+  });
+}
+
+async function stopAudioRecording(
+  page: Page,
+  audioCapture: AudioCaptureController,
+): Promise<{ filePath: string; bytes: number; contentType: string }> {
+  const result = await page.evaluate(
+    "window.__stopMeetAudioRecording ? window.__stopMeetAudioRecording() : { stopped: true, audioTracks: 0, mimeType: 'audio/webm' }",
+  ) as AudioRecorderStopResult;
+
+  await audioCapture.close();
+  const bytes = audioCapture.getBytesWritten();
+  if (bytes === 0) {
+    throw new Error("Meeting audio recording was empty.");
+  }
+
+  logger.info("MeetBot:Audio", "Audio recording stopped", {
+    audioTracks: result.audioTracks,
+    mimeType: result.mimeType,
+    bytes,
+  });
+
+  return {
+    filePath: audioCapture.filePath,
+    bytes,
+    contentType: audioCapture.getContentType(),
+  };
+}
+
+async function waitForMeetingToEnd(page: Page, session: BotSession): Promise<void> {
+  const ctx = "MeetBot";
   let meetingActive = true;
 
   while (meetingActive) {
@@ -376,7 +534,7 @@ async function scrapeCaptions(page: Page, session: BotSession): Promise<Transcri
 
     // Check if stop was requested
     if (session._stopRequested) {
-      logger.info(ctx, "Stop requested, finalizing transcript...");
+      logger.info(ctx, "Stop requested, finalizing recording...");
       break;
     }
 
@@ -404,70 +562,7 @@ async function scrapeCaptions(page: Page, session: BotSession): Promise<Transcri
       logger.info(ctx, "Page became unavailable, assuming meeting ended");
       meetingActive = false;
     }
-
-    // Collect any new caption data
-    try {
-      const newData = await page.evaluate(`
-        (function() {
-          var data = (window.__captionData || []).slice();
-          window.__captionData = [];
-          return data;
-        })()
-      `) as TranscriptSegment[];
-      if (newData.length > 0) {
-        transcript.push(...newData);
-        logger.debug(ctx, `Collected ${newData.length} new caption segments`);
-      }
-    } catch {
-      // Ignore — page might be closing
-    }
   }
-
-  // Final collection
-  try {
-    const remaining = await page.evaluate(`
-      (function() {
-        var data = (window.__captionData || []).slice();
-        window.__captionData = [];
-        return data;
-      })()
-    `) as TranscriptSegment[];
-    transcript.push(...remaining);
-  } catch {
-    // Ignore
-  }
-
-  return deduplicateTranscript(transcript);
-}
-
-/**
- * Remove duplicate consecutive segments (captions often fire multiple times
- * as the text is refined).
- */
-function deduplicateTranscript(segments: TranscriptSegment[]): TranscriptSegment[] {
-  if (segments.length === 0) return [];
-
-  const deduped: TranscriptSegment[] = [segments[0]];
-
-  for (let i = 1; i < segments.length; i++) {
-    const prev = deduped[deduped.length - 1];
-    const curr = segments[i];
-
-    // Skip if same speaker and the text is a substring of the previous
-    if (curr.speaker === prev.speaker && prev.text.includes(curr.text)) {
-      continue;
-    }
-
-    // If the current text contains the previous text, replace it (it's more complete)
-    if (curr.speaker === prev.speaker && curr.text.includes(prev.text)) {
-      deduped[deduped.length - 1] = curr;
-      continue;
-    }
-
-    deduped.push(curr);
-  }
-
-  return deduped;
 }
 
 /**

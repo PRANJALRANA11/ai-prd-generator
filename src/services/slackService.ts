@@ -1,126 +1,286 @@
-import { WebClient, type KnownBlock } from "@slack/web-api";
 import { logger } from "../utils/logger.js";
 
+export interface SlackWebhookPayload {
+  text: string;
+  response_type?: "ephemeral" | "in_channel";
+  blocks?: Array<Record<string, unknown>>;
+}
+
+interface PRDSection {
+  title: string;
+  body: string;
+}
+
+interface PRDMetadata {
+  meetUrl?: string;
+  meetingDuration?: string;
+  participantCount?: number;
+  sessionId?: string;
+  version?: number;
+  reason?: string;
+}
+
 /**
- * Posts a generated PRD to the configured Slack channel.
+ * Posts a generated PRD to the configured Slack incoming webhook.
  *
- * The PRD is posted as a rich message with a header and the PRD content
- * in a Slack `mrkdwn` section. If the PRD is too long for a single message,
- * it is split across multiple messages in a thread.
+ * The PRD is posted as rich Slack blocks. If it is too long for one webhook
+ * payload, sections are split across multiple webhook messages.
  */
 export async function postPRDToSlack(
-  botToken: string,
-  channelId: string,
+  webhookUrl: string,
   prdMarkdown: string,
-  metadata?: {
-    meetUrl?: string;
-    meetingDuration?: string;
-    participantCount?: number;
-  },
+  metadata?: PRDMetadata,
 ): Promise<void> {
   const ctx = "SlackService";
-  const client = new WebClient(botToken);
 
-  // Slack's max text block size is ~3000 chars for `mrkdwn` sections
-  const SLACK_BLOCK_LIMIT = 2900;
+  logger.info(ctx, "Posting PRD to Slack webhook", { prdLength: prdMarkdown.length });
 
-  logger.info(ctx, "Posting PRD to Slack", { channelId, prdLength: prdMarkdown.length });
+  const messages = buildPRDMessages(prdMarkdown, metadata);
 
-  // ── Build the header message ───────────────────────────
-  const headerBlocks: KnownBlock[] = [
+  for (let i = 0; i < messages.length; i++) {
+    await postSlackWebhook(webhookUrl, messages[i]);
+    if (i > 0) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  }
+
+  logger.info(ctx, `Posted ${messages.length} PRD webhook message(s)`);
+  logger.info(ctx, "PRD posted to Slack successfully");
+}
+
+export async function postSlackWebhook(
+  webhookUrl: string,
+  payload: SlackWebhookPayload,
+): Promise<void> {
+  const response = await fetch(webhookUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Slack webhook failed (${response.status}): ${body || response.statusText}`);
+  }
+}
+
+export function buildVersionHistoryText(
+  versions: Array<{
+    version: number;
+    createdAt: Date;
+    roadmapNotes?: string;
+    changeSummary?: string;
+  }>,
+): string {
+  if (versions.length === 0) {
+    return "No PRD versions are available yet.";
+  }
+
+  return versions
+    .map((version) => {
+      const reason = version.changeSummary ?? version.roadmapNotes ?? "Initial generated PRD";
+      return `*v${version.version}* · ${version.createdAt.toLocaleString()}\n${truncate(reason, 220)}`;
+    })
+    .join("\n\n");
+}
+
+function buildPRDMessages(prdMarkdown: string, metadata?: PRDMetadata): SlackWebhookPayload[] {
+  const sections = parsePRDSections(prdMarkdown);
+  const messages: SlackWebhookPayload[] = [];
+  const introBlocks: Array<Record<string, unknown>> = [
     {
       type: "header",
       text: {
         type: "plain_text",
-        text: "📋 New PRD Generated from Meeting",
+        text: metadata?.version
+          ? `PRD v${metadata.version} Ready`
+          : "PRD Ready",
         emoji: true,
       },
     },
     {
       type: "section",
-      text: {
-        type: "mrkdwn",
-        text: buildMetadataLine(metadata),
-      },
+      fields: buildMetadataFields(metadata),
     },
     { type: "divider" },
   ];
 
-  // ── Split PRD into chunks if needed ────────────────────
-  const prdChunks = splitText(prdMarkdown, SLACK_BLOCK_LIMIT);
-
-  // Add the first chunk to the header message
-  headerBlocks.push({
-    type: "section",
-    text: {
-      type: "mrkdwn",
-      text: prdChunks[0],
-    },
-  });
-
-  // Post the main message
-  const result = await client.chat.postMessage({
-    channel: channelId,
-    text: "📋 New PRD Generated from Meeting", // Fallback text for notifications
-    blocks: headerBlocks,
-  });
-
-  const threadTs = result.ts;
-  logger.info(ctx, "Header message posted", { ts: threadTs });
-
-  // Post remaining chunks as threaded replies
-  if (prdChunks.length > 1) {
-    for (let i = 1; i < prdChunks.length; i++) {
-      await client.chat.postMessage({
-        channel: channelId,
-        thread_ts: threadTs,
-        text: prdChunks[i],
-        blocks: [
-          {
-            type: "section",
-            text: {
-              type: "mrkdwn",
-              text: prdChunks[i],
-            },
-          },
-        ],
-      });
-
-      // Small delay to avoid rate limits
-      await new Promise((resolve) => setTimeout(resolve, 500));
-    }
-    logger.info(ctx, `Posted ${prdChunks.length - 1} additional thread messages`);
+  const executiveSummary = sections.find((section) => /executive summary/i.test(section.title));
+  if (executiveSummary) {
+    introBlocks.push({
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `*Executive Summary*\n${formatSlackMrkdwn(executiveSummary.body, 1400)}`,
+      },
+    });
   }
 
-  logger.info(ctx, "PRD posted to Slack successfully");
+  introBlocks.push({
+    type: "context",
+    elements: [
+      {
+        type: "mrkdwn",
+        text: buildCommandHint(metadata?.sessionId),
+      },
+    ],
+  });
+
+  messages.push({
+    text: "PRD generated from meeting",
+    blocks: introBlocks,
+  });
+
+  const contentSections = sections.filter((section) => section !== executiveSummary);
+  let currentBlocks: Array<Record<string, unknown>> = [];
+
+  for (const section of contentSections) {
+    const sectionBlocks = buildSectionBlocks(section);
+    if (currentBlocks.length + sectionBlocks.length > 45) {
+      messages.push({
+        text: "PRD continued",
+        blocks: currentBlocks,
+      });
+      currentBlocks = [];
+    }
+    currentBlocks.push(...sectionBlocks);
+  }
+
+  if (currentBlocks.length > 0) {
+    messages.push({
+      text: "PRD continued",
+      blocks: currentBlocks,
+    });
+  }
+
+  return messages;
 }
 
-function buildMetadataLine(
-  metadata?: {
-    meetUrl?: string;
-    meetingDuration?: string;
-    participantCount?: number;
-  },
-): string {
-  const parts: string[] = [
-    `*Generated at:* ${new Date().toLocaleString()}`,
+function buildMetadataFields(metadata?: PRDMetadata): Array<Record<string, string>> {
+  const fields: Array<Record<string, string>> = [
+    {
+      type: "mrkdwn",
+      text: `*Generated*\n${new Date().toLocaleString()}`,
+    },
   ];
+
+  if (metadata?.version) {
+    fields.push({
+      type: "mrkdwn",
+      text: `*Version*\nv${metadata.version}`,
+    });
+  }
+  if (metadata?.sessionId) {
+    fields.push({
+      type: "mrkdwn",
+      text: `*Session*\n\`${metadata.sessionId}\``,
+    });
+  }
   if (metadata?.meetUrl) {
-    parts.push(`*Meeting:* <${metadata.meetUrl}|Google Meet Link>`);
+    fields.push({
+      type: "mrkdwn",
+      text: `*Meeting*\n<${metadata.meetUrl}|Google Meet>`,
+    });
   }
   if (metadata?.meetingDuration) {
-    parts.push(`*Duration:* ${metadata.meetingDuration}`);
+    fields.push({
+      type: "mrkdwn",
+      text: `*Duration*\n${metadata.meetingDuration}`,
+    });
   }
   if (metadata?.participantCount) {
-    parts.push(`*Participants:* ${metadata.participantCount}`);
+    fields.push({
+      type: "mrkdwn",
+      text: `*Participants*\n${metadata.participantCount}`,
+    });
   }
-  return parts.join("  |  ");
+  if (metadata?.reason) {
+    fields.push({
+      type: "mrkdwn",
+      text: `*Update*\n${truncate(metadata.reason, 160)}`,
+    });
+  }
+
+  return fields;
 }
 
-/**
- * Splits text into chunks of at most `maxLen` characters,
- * trying to break at paragraph boundaries.
- */
+function parsePRDSections(markdown: string): PRDSection[] {
+  const sections: PRDSection[] = [];
+  let currentTitle = "Overview";
+  let currentBody: string[] = [];
+
+  for (const line of markdown.split(/\r?\n/)) {
+    const heading = line.match(/^##\s+(.+)$/);
+    if (heading) {
+      if (currentBody.join("\n").trim()) {
+        sections.push({
+          title: currentTitle,
+          body: currentBody.join("\n").trim(),
+        });
+      }
+      currentTitle = heading[1].trim();
+      currentBody = [];
+    } else if (!/^#\s+/.test(line)) {
+      currentBody.push(line);
+    }
+  }
+
+  if (currentBody.join("\n").trim()) {
+    sections.push({
+      title: currentTitle,
+      body: currentBody.join("\n").trim(),
+    });
+  }
+
+  return sections.length > 0 ? sections : [{ title: "PRD", body: markdown }];
+}
+
+function buildSectionBlocks(section: PRDSection): Array<Record<string, unknown>> {
+  const chunks = splitText(formatSlackMrkdwn(section.body), 2800);
+  return [
+    {
+      type: "header",
+      text: {
+        type: "plain_text",
+        text: truncate(section.title, 140),
+        emoji: true,
+      },
+    },
+    ...chunks.map((chunk) => ({
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: chunk,
+      },
+    })),
+    { type: "divider" },
+  ];
+}
+
+function formatSlackMrkdwn(markdown: string, maxLen = 2800): string {
+  const formatted = markdown
+    .replace(/^###\s+(.+)$/gm, "*$1*")
+    .replace(/^####\s+(.+)$/gm, "*$1*")
+    .replace(/^\d+\.\s+/gm, "• ")
+    .replace(/^- /gm, "• ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  return truncate(formatted || "Not discussed in this meeting.", maxLen);
+}
+
+function buildCommandHint(sessionId?: string): string {
+  const target = sessionId ? ` \`${sessionId}\`` : "";
+  return `Try: \`/prd${target} help\` · \`/prd${target} history\` · \`/prd${target} roadmap <update>\` · \`/prd${target} diff v1 v2\``;
+}
+
+function truncate(text: string, maxLen: number): string {
+  if (text.length <= maxLen) return text;
+  return `${text.slice(0, Math.max(0, maxLen - 1)).trimEnd()}…`;
+}
+
 function splitText(text: string, maxLen: number): string[] {
   if (text.length <= maxLen) return [text];
 
@@ -133,20 +293,10 @@ function splitText(text: string, maxLen: number): string[] {
       break;
     }
 
-    // Try to break at a double newline (paragraph boundary)
     let breakPoint = remaining.lastIndexOf("\n\n", maxLen);
-    if (breakPoint <= 0) {
-      // Try a single newline
-      breakPoint = remaining.lastIndexOf("\n", maxLen);
-    }
-    if (breakPoint <= 0) {
-      // Try a space
-      breakPoint = remaining.lastIndexOf(" ", maxLen);
-    }
-    if (breakPoint <= 0) {
-      // Hard break
-      breakPoint = maxLen;
-    }
+    if (breakPoint <= 0) breakPoint = remaining.lastIndexOf("\n", maxLen);
+    if (breakPoint <= 0) breakPoint = remaining.lastIndexOf(" ", maxLen);
+    if (breakPoint <= 0) breakPoint = maxLen;
 
     chunks.push(remaining.slice(0, breakPoint));
     remaining = remaining.slice(breakPoint).trimStart();

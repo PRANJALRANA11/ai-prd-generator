@@ -107,3 +107,133 @@ export async function generatePRD(
 
   return prdText;
 }
+
+export async function answerPRDQuestion(
+  apiKey: string,
+  prdMarkdown: string,
+  question: string,
+  transcript: TranscriptSegment[] = [],
+  roadmap?: string,
+): Promise<string> {
+  const ctx = "LLMService";
+  const genai = new GoogleGenAI({ apiKey });
+  const transcriptContext = transcript
+    .slice(-80)
+    .map((seg) => `[${seg.timestamp}] ${seg.speaker}: ${seg.text}`)
+    .join("\n");
+
+  logger.info(ctx, "Answering PRD question", {
+    questionLength: question.length,
+    prdLength: prdMarkdown.length,
+  });
+
+  const response = await genai.models.generateContent({
+    model: "gemini-2.5-flash",
+    contents: [
+      {
+        role: "user",
+        parts: [
+          {
+            text: `Current PRD:\n\n${prdMarkdown}\n\nRoadmap context:\n${roadmap ?? "No roadmap has been captured yet."}\n\nRecent transcript context:\n${transcriptContext || "No transcript context available."}\n\nQuestion from Slack:\n${question}`,
+          },
+        ],
+      },
+    ],
+    config: {
+      systemInstruction:
+        "You answer questions about a product PRD and roadmap. Be concise, accurate, and grounded only in the provided PRD, roadmap, and transcript context. If the answer is not present, say what is missing and suggest the next clarification needed.",
+      temperature: 0.2,
+      maxOutputTokens: 2048,
+    },
+  });
+
+  const answer = response.text?.trim() ?? "";
+  if (!answer) {
+    throw new Error("Gemini returned an empty PRD question response.");
+  }
+  return answer;
+}
+
+export async function updatePRDWithRoadmap(
+  apiKey: string,
+  prdMarkdown: string,
+  roadmapNotes: string,
+): Promise<string> {
+  const ctx = "LLMService";
+  const genai = new GoogleGenAI({ apiKey });
+
+  logger.info(ctx, "Updating PRD with roadmap notes", {
+    roadmapLength: roadmapNotes.length,
+    prdLength: prdMarkdown.length,
+  });
+
+  const response = await genai.models.generateContent({
+    model: "gemini-2.5-flash",
+    contents: [
+      {
+        role: "user",
+        parts: [
+          {
+            text: `Current PRD:\n\n${prdMarkdown}\n\nRoadmap updates or direction from Slack:\n\n${roadmapNotes}\n\nReturn the complete updated PRD in Markdown.`,
+          },
+        ],
+      },
+    ],
+    config: {
+      systemInstruction:
+        "You update an existing PRD using new roadmap information. Preserve useful existing content, incorporate the roadmap as authoritative new direction, update goals/scope/requirements/timeline/risks where relevant, and do not invent unsupported details. Return only the complete updated PRD in clean Markdown.",
+      temperature: 0.25,
+      maxOutputTokens: 8192,
+    },
+  });
+
+  const updatedPrd = response.text?.trim() ?? "";
+  if (!updatedPrd) {
+    throw new Error("Gemini returned an empty updated PRD.");
+  }
+  return updatedPrd;
+}
+
+export async function comparePRDVersions(
+  apiKey: string,
+  olderPrd: string,
+  newerPrd: string,
+  olderLabel: string,
+  newerLabel: string,
+): Promise<string> {
+  const ctx = "LLMService";
+  const genai = new GoogleGenAI({ apiKey });
+
+  logger.info(ctx, "Comparing PRD versions", {
+    olderLabel,
+    newerLabel,
+    olderLength: olderPrd.length,
+    newerLength: newerPrd.length,
+  });
+
+  const response = await genai.models.generateContent({
+    model: "gemini-2.5-flash",
+    contents: [
+      {
+        role: "user",
+        parts: [
+          {
+            text: `Older PRD (${olderLabel}):\n\n${olderPrd}\n\nNewer PRD (${newerLabel}):\n\n${newerPrd}`,
+          },
+        ],
+      },
+    ],
+    config: {
+      systemInstruction:
+        "Compare two PRD versions. Return a concise Slack-friendly Markdown summary with: 1) major product changes, 2) scope changes, 3) roadmap/timeline changes, 4) risks or open questions introduced or resolved. Do not include unchanged sections.",
+      temperature: 0.2,
+      maxOutputTokens: 2048,
+    },
+  });
+
+  const comparison = response.text?.trim() ?? "";
+  if (!comparison) {
+    throw new Error("Gemini returned an empty PRD version comparison.");
+  }
+  return comparison;
+}
