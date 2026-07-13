@@ -1,0 +1,29 @@
+{
+  "name": "ai-prd-generator",
+  "version": "1.0.0",
+  "description": "A bot that joins Google Meet calls, captures live captions, generates a PRD using Google Gemini, and posts it to Slack.",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "auth-setup": "tsx src/utils/authSetup.ts",
+    "generate-bot-background": "tsx scripts/generateBotBackground.ts",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@google/genai": "^1.0.0",
+    "@slack/web-api": "^7.0.0",
+    "dotenv": "^16.4.0",
+    "express": "^5.1.0",
+    "playwright": "^1.52.0",
+    "uuid": "^11.1.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.0.0",
+    "@types/uuid": "^10.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
