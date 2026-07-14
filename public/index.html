@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI PRD Generator</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="topbar" aria-label="Primary">
+        <a class="brand" href="/" aria-label="AI PRD Generator home">
+          <span class="brand-mark">&gt;_</span>
+          <span>prd0<span>.ai</span></span>
+        </a>
+        <nav class="nav-links" aria-label="Page">
+          <a class="active" href="#launch">Launch</a>
+          <a href="#commands">Commands</a>
+          <a href="#history">History</a>
+        </nav>
+      </header>
+
+      <main>
+        <section class="notice" aria-label="Product update">
+          <span class="live-dot" aria-hidden="true"></span>
+          <div>
+            <strong>Meet-to-PRD workflow is live.</strong>
+            <span>Join a Google Meet, transcribe with Deepgram, generate the PRD, then post it to Slack.</span>
+          </div>
+          <a href="#commands">View commands</a>
+        </section>
+
+        <section class="hero" id="launch">
+          <div class="hero-copy">
+            <div class="yc-badge">
+              <span>AI</span>
+              Built for product teams
+            </div>
+            <h1>Meetings become PRDs in <span class="strike">hours</span><span class="accent">minutes</span></h1>
+            <p>
+              Add the bot to a meeting, choose the Slack channel, and let the transcript,
+              product brief, roadmap updates, and version history stay connected.
+            </p>
+            <div class="trust-row" aria-label="Workflow">
+              <span>Google Meet</span>
+              <span>Deepgram</span>
+              <span>Gemini</span>
+              <span>Slack</span>
+            </div>
+          </div>
+
+          <form class="launch-panel" id="launch-form">
+            <div class="panel-heading">
+              <p>Launch bot</p>
+              <span id="config-status">Checking setup...</span>
+            </div>
+
+            <label for="meet-url">Meeting ID or Google Meet URL</label>
+            <div class="input-row">
+              <input
+                id="meet-url"
+                name="meetUrl"
+                type="text"
+                autocomplete="off"
+                placeholder="abc-defg-hij"
+                required
+              />
+              <button class="icon-button" type="button" id="paste-meet" title="Paste meeting link" aria-label="Paste meeting link">
+                <span aria-hidden="true">+</span>
+              </button>
+            </div>
+
+            <label for="slack-webhook">Slack channel webhook</label>
+            <input
+              id="slack-webhook"
+              name="slackWebhookUrl"
+              type="url"
+              inputmode="url"
+              placeholder="Uses configured webhook when blank"
+            />
+
+            <div class="actions">
+              <button class="primary-button" type="submit">Add bot to Meet</button>
+              <button class="secondary-button" type="button" id="test-slack">Test Slack</button>
+            </div>
+
+            <div class="status-box" id="status-box" role="status" aria-live="polite">
+              Ready for a meeting code.
+            </div>
+
+            <section class="live-log-panel" aria-label="Live call log">
+              <div class="live-log-heading">
+                <span>Live call log</span>
+                <button class="clear-log-button" type="button" id="clear-log">Clear</button>
+              </div>
+              <ol class="live-log-list" id="live-log-list">
+                <li class="empty-log">Start a bot session to see live call events.</li>
+              </ol>
+            </section>
+          </form>
+        </section>
+
+        <section class="command-strip" id="commands" aria-label="Slack command examples">
+          <div>
+            <span class="section-kicker">Slack</span>
+            <h2>Useful commands, without digging through docs.</h2>
+          </div>
+          <div class="commands-grid">
+            <code>/prd help</code>
+            <code>/prd history</code>
+            <code>/prd show v2</code>
+            <code>/prd diff v1 v2</code>
+            <code>/prd roadmap Q3 beta, Q4 launch</code>
+            <code>/prd What changed in scope?</code>
+          </div>
+        </section>
+      </main>
+    </div>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

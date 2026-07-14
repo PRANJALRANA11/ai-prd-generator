@@ -1,11 +1,14 @@
 import express, { type Request, type Response } from "express";
 import { v4 as uuidv4 } from "uuid";
+import path from "path";
+import { fileURLToPath } from "url";
 import { loadConfig } from "./config.js";
 import { logger } from "./utils/logger.js";
 import { startMeetBot, requestStop, type BotSession } from "./services/meetBot.js";
 import { answerPRDQuestion, comparePRDVersions, generatePRD, updatePRDWithRoadmap } from "./services/llmService.js";
 import { buildVersionHistoryText, postPRDToSlack, postSlackWebhook } from "./services/slackService.js";
 import { PostgresSessionStore } from "./services/sessionStore.js";
+import { appendSessionLog, getSessionLogs, subscribeToSessionLogs } from "./services/liveLogService.js";
 
 // ── Load configuration ────────────────────────────────────
 const config = loadConfig();
@@ -22,9 +25,31 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
+const publicDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "public");
+app.use(express.static(publicDir));
+
 // ── Health check ──────────────────────────────────────────
 app.get("/health", (_req, res) => {
   res.json({ status: "ok", uptime: process.uptime() });
+});
+
+app.get("/api/config", (_req, res) => {
+  res.json({
+    slackWebhookConfigured: Boolean(config.slackWebhookUrl),
+    slashCommandPath: "/api/slack/prd",
+  });
+});
+
+app.post("/api/slack/test", async (req, res) => {
+  const { slackWebhookUrl } = req.body as { slackWebhookUrl?: string };
+  const webhookUrl = parseOptionalWebhook(slackWebhookUrl, res) ?? config.slackWebhookUrl;
+  if (res.headersSent) return;
+
+  await postSlackWebhook(webhookUrl, {
+    text: "AI PRD Generator is connected to this Slack channel.",
+  });
+
+  res.json({ ok: true });
 });
 
 /**
@@ -36,11 +61,17 @@ app.get("/health", (_req, res) => {
  * that can be used to check status or stop the bot.
  */
 app.post("/api/start-bot", async (req, res) => {
-  const { meetUrl } = req.body as { meetUrl?: string };
+  const { meetUrl, slackWebhookUrl } = req.body as {
+    meetUrl?: string;
+    slackWebhookUrl?: string;
+  };
+  const normalizedMeetUrl = normalizeMeetUrl(meetUrl);
+  const normalizedSlackWebhookUrl = parseOptionalWebhook(slackWebhookUrl, res);
+  if (res.headersSent) return;
 
-  if (!meetUrl || !meetUrl.includes("meet.google.com")) {
+  if (!normalizedMeetUrl) {
     res.status(400).json({
-      error: "Invalid or missing meetUrl. Must be a Google Meet URL.",
+      error: "Invalid or missing meetUrl. Enter a Google Meet URL or meeting code.",
     });
     return;
   }
@@ -48,16 +79,21 @@ app.post("/api/start-bot", async (req, res) => {
   const sessionId = uuidv4();
   const session: BotSession = {
     id: sessionId,
-    meetUrl,
+    meetUrl: normalizedMeetUrl,
     status: "joining",
     transcript: [],
+    slackWebhookUrl: normalizedSlackWebhookUrl,
     startedAt: new Date(),
     _stopRequested: false,
   };
 
   activeSessions.set(sessionId, session);
 
-  logger.info("Server", "Starting bot session", { sessionId, meetUrl });
+  logger.info("Server", "Starting bot session", { sessionId, meetUrl: normalizedMeetUrl });
+  appendSessionLog(sessionId, "info", "Bot launch requested", {
+    meetUrl: normalizedMeetUrl,
+    mode: "notetaker",
+  });
 
   await sessionStore.upsertSession(session);
 
@@ -134,6 +170,37 @@ app.get("/api/status/:sessionId", async (req, res) => {
     endedAt: session.endedAt?.toISOString() ?? null,
     transcriptSegments: session.transcript.length,
     error: session.error ?? null,
+  });
+});
+
+app.get("/api/logs/:sessionId", (req, res) => {
+  res.json({
+    sessionId: req.params.sessionId,
+    logs: getSessionLogs(req.params.sessionId),
+  });
+});
+
+app.get("/api/logs/:sessionId/stream", (req, res) => {
+  const sessionId = req.params.sessionId;
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+  });
+
+  const send = (entry: unknown) => {
+    res.write(`data: ${JSON.stringify(entry)}\n\n`);
+  };
+
+  getSessionLogs(sessionId).forEach(send);
+  const unsubscribe = subscribeToSessionLogs(sessionId, send);
+  const keepAlive = setInterval(() => {
+    res.write(": keep-alive\n\n");
+  }, 25_000);
+
+  req.on("close", () => {
+    clearInterval(keepAlive);
+    unsubscribe();
   });
 });
 
@@ -257,10 +324,11 @@ async function runPipeline(session: BotSession): Promise<void> {
 
   try {
     // Step 1: Join meeting and capture transcript
-    logger.info(ctx, "Step 1/3: Joining meeting and capturing transcript...", {
-      sessionId: session.id,
-    });
-    const transcript = await startMeetBot(
+	    logger.info(ctx, "Step 1/3: Joining meeting and capturing transcript...", {
+	      sessionId: session.id,
+	    });
+	    appendSessionLog(session.id, "info", "Joining Meet and starting transcript capture");
+	    const transcript = await startMeetBot(
       session,
       config.authStatePath,
       config.botDisplayName,
@@ -271,19 +339,23 @@ async function runPipeline(session: BotSession): Promise<void> {
       logger.warn(ctx, "No transcript captured. Skipping PRD generation.", {
         sessionId: session.id,
       });
-      session.status = "completed";
-      session.error = "No transcript was captured. Was meeting audio available to the bot?";
-      await sessionStore.upsertSession(session);
-      return;
-    }
+	      session.status = "completed";
+	      session.error = "No transcript was captured. Was meeting audio available to the bot?";
+	      await sessionStore.upsertSession(session);
+	      appendSessionLog(session.id, "warn", "No transcript was captured");
+	      return;
+	    }
 
     // Step 2: Generate PRD
     session.status = "processing";
     await sessionStore.upsertSession(session);
-    logger.info(ctx, "Step 2/3: Generating PRD with Gemini...", {
-      sessionId: session.id,
-      segments: transcript.length,
-    });
+	    logger.info(ctx, "Step 2/3: Generating PRD with Gemini...", {
+	      sessionId: session.id,
+	      segments: transcript.length,
+	    });
+	    appendSessionLog(session.id, "info", "Generating PRD with Gemini", {
+	      transcriptSegments: transcript.length,
+	    });
 
     const prd = await generatePRD(config.geminiApiKey, transcript);
     session.prd = prd;
@@ -293,9 +365,10 @@ async function runPipeline(session: BotSession): Promise<void> {
     });
 
     // Step 3: Post to Slack
-    logger.info(ctx, "Step 3/3: Posting PRD to Slack...", {
-      sessionId: session.id,
-    });
+	    logger.info(ctx, "Step 3/3: Posting PRD to Slack...", {
+	      sessionId: session.id,
+	    });
+	    appendSessionLog(session.id, "info", "Posting PRD to Slack");
 
     const durationMs = session.endedAt
       ? session.endedAt.getTime() - session.startedAt.getTime()
@@ -303,22 +376,24 @@ async function runPipeline(session: BotSession): Promise<void> {
 
     const durationMin = Math.round(durationMs / 60_000);
 
-    await postPRDToSlack(config.slackWebhookUrl, prd, {
+    await postPRDToSlack(getSessionSlackWebhook(session), prd, {
       meetUrl: session.meetUrl,
       meetingDuration: `${durationMin} minutes`,
       sessionId: session.id,
       version: prdVersion.version,
     });
 
-    session.status = "completed";
-    await sessionStore.upsertSession(session);
-    logger.info(ctx, "Pipeline completed successfully!", { sessionId: session.id });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    session.status = "error";
-    session.error = message;
-    await sessionStore.upsertSession(session);
-    logger.error(ctx, "Pipeline failed", { sessionId: session.id, error: message });
+	    session.status = "completed";
+	    await sessionStore.upsertSession(session);
+	    logger.info(ctx, "Pipeline completed successfully!", { sessionId: session.id });
+	    appendSessionLog(session.id, "info", "Pipeline completed successfully");
+	  } catch (err) {
+	    const message = err instanceof Error ? err.message : String(err);
+	    session.status = "error";
+	    session.error = message;
+	    await sessionStore.upsertSession(session);
+	    logger.error(ctx, "Pipeline failed", { sessionId: session.id, error: message });
+	    appendSessionLog(session.id, "error", "Pipeline failed", { error: message });
   } finally {
     activeSessions.delete(session.id);
   }
@@ -385,7 +460,7 @@ async function handleSlackPRDCommand(
       response_type: "in_channel",
       text: `Posting PRD v${version.version} for \`${session.id}\`.`,
     });
-    await postPRDToSlack(config.slackWebhookUrl, version.prd, {
+    await postPRDToSlack(getSessionSlackWebhook(session), version.prd, {
       meetUrl: session.meetUrl,
       meetingDuration: session.endedAt
         ? `${Math.round((session.endedAt.getTime() - session.startedAt.getTime()) / 60_000)} minutes`
@@ -444,7 +519,7 @@ async function handleSlackPRDCommand(
       text: `Updated PRD from roadmap notes${userName ? ` by ${userName}` : ""}. Created v${prdVersion.version} and posting the refreshed PRD now.`,
     });
 
-    await postPRDToSlack(config.slackWebhookUrl, updatedPrd, {
+    await postPRDToSlack(getSessionSlackWebhook(session), updatedPrd, {
       meetUrl: session.meetUrl,
       meetingDuration: session.endedAt
         ? `${Math.round((session.endedAt.getTime() - session.startedAt.getTime()) / 60_000)} minutes`
@@ -479,6 +554,47 @@ function buildSlackCommandHelp(sessionId: string): string {
     "• Versions: `/prd history` · `/prd show v2` · `/prd diff v1 v2`",
     "• Target: `/prd <sessionId> history`",
   ].join("\n");
+}
+
+function getSessionSlackWebhook(session: BotSession): string {
+  return session.slackWebhookUrl ?? config.slackWebhookUrl;
+}
+
+function normalizeMeetUrl(value: string | undefined): string | null {
+  const input = value?.trim();
+  if (!input) return null;
+
+  if (/^https:\/\/meet\.google\.com\/[a-z]{3}-[a-z]{4}-[a-z]{3}/i.test(input)) {
+    return input;
+  }
+
+  const code = input
+    .replace(/^https?:\/\/meet\.google\.com\//i, "")
+    .replace(/[^a-zA-Z0-9]/g, "")
+    .toLowerCase();
+
+  if (!/^[a-z]{10}$/.test(code)) return null;
+  return `https://meet.google.com/${code.slice(0, 3)}-${code.slice(3, 7)}-${code.slice(7)}`;
+}
+
+function normalizeOptionalWebhook(value: string | undefined): string | undefined {
+  const input = value?.trim();
+  if (!input) return undefined;
+  if (!/^https:\/\/hooks\.slack\.com\/services\//.test(input)) {
+    throw new Error("Slack webhook URL must start with https://hooks.slack.com/services/");
+  }
+  return input;
+}
+
+function parseOptionalWebhook(value: string | undefined, res: Response): string | undefined {
+  try {
+    return normalizeOptionalWebhook(value);
+  } catch (err) {
+    res.status(400).json({
+      error: err instanceof Error ? err.message : "Invalid Slack webhook URL.",
+    });
+    return undefined;
+  }
 }
 
 // ── Start the server ──────────────────────────────────────

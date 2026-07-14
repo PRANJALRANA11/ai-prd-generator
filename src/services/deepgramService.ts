@@ -49,6 +49,24 @@ export async function transcribeAudioFile(
     contentType,
   });
 
+  return transcribeAudioBuffer(apiKey, audio, contentType, recordingStartedAt, audioFilePath);
+}
+
+export async function transcribeAudioBuffer(
+  apiKey: string,
+  audio: Buffer,
+  contentType: string,
+  recordingStartedAt: Date,
+  label = "buffer",
+): Promise<TranscriptSegment[]> {
+  const ctx = "DeepgramService";
+
+  logger.info(ctx, "Sending audio buffer to Deepgram", {
+    label,
+    bytes: audio.byteLength,
+    contentType,
+  });
+
   const params = new URLSearchParams({
     model: "nova-3",
     smart_format: "true",
@@ -57,13 +75,18 @@ export async function transcribeAudioFile(
     diarize_model: "latest",
   });
 
+  const audioBody = audio.buffer.slice(
+    audio.byteOffset,
+    audio.byteOffset + audio.byteLength,
+  ) as ArrayBuffer;
+
   const response = await fetch(`https://api.deepgram.com/v1/listen?${params.toString()}`, {
     method: "POST",
     headers: {
       Authorization: `Token ${apiKey}`,
       "Content-Type": contentType,
     },
-    body: audio,
+    body: audioBody,
   });
 
   const body = (await response.json()) as DeepgramResponse;
@@ -76,6 +99,7 @@ export async function transcribeAudioFile(
 
   const transcript = parseDeepgramTranscript(body, recordingStartedAt);
   logger.info(ctx, "Deepgram transcription completed", {
+    label,
     segments: transcript.length,
   });
 

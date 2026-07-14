@@ -3,6 +3,7 @@ import path from "path";
 import fs from "fs";
 import { logger } from "../utils/logger.js";
 import { transcribeAudioFile } from "./deepgramService.js";
+import { appendSessionLog } from "./liveLogService.js";
 
 export interface TranscriptSegment {
   timestamp: string;
@@ -17,6 +18,7 @@ export interface BotSession {
   transcript: TranscriptSegment[];
   prd?: string;
   roadmap?: string;
+  slackWebhookUrl?: string;
   startedAt: Date;
   endedAt?: Date;
   error?: string;
@@ -27,8 +29,6 @@ export interface BotSession {
   _page?: Page;
   _context?: BrowserContext;
 }
-
-const DEFAULT_FAKE_VIDEO_PATH = path.resolve("assets", "bot-background.y4m");
 
 const AUDIO_RECORDER_INIT_SCRIPT = `
 (function() {
@@ -198,6 +198,7 @@ const AUDIO_RECORDER_INIT_SCRIPT = `
       setTimeout(finish, 5000);
     });
   };
+
 })();
 `;
 
@@ -248,25 +249,14 @@ export async function startMeetBot(
 
   // ── Launch browser ─────────────────────────────────────
   logger.info(ctx, "Launching browser", { meetUrl: session.meetUrl });
+  appendSessionLog(session.id, "info", "Launching Meet browser");
 
-  const fakeVideoPath = path.resolve(process.env.BOT_FAKE_VIDEO_PATH ?? DEFAULT_FAKE_VIDEO_PATH);
   const browserArgs = [
     "--disable-blink-features=AutomationControlled",
-    "--use-fake-ui-for-media-stream",       // Auto-allow mic/camera prompts
-    "--use-fake-device-for-media-stream",   // Use fake media devices
+    "--use-fake-ui-for-media-stream",
     "--disable-notifications",
     "--no-sandbox",
   ];
-  const useBotBackground = fs.existsSync(fakeVideoPath);
-
-  if (useBotBackground) {
-    browserArgs.push(`--use-file-for-fake-video-capture=${fakeVideoPath}`);
-    logger.info(ctx, "Using bot camera background", { fakeVideoPath });
-  } else {
-    logger.warn(ctx, "Bot camera background file not found; using Chromium's default fake video", {
-      fakeVideoPath,
-    });
-  }
 
   const browser = await chromium.launch({
     headless: false, // Visible browser so you can watch in real-time
@@ -278,7 +268,7 @@ export async function startMeetBot(
     storageState: resolvedAuthPath,
     userAgent:
       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    permissions: ["microphone", "camera"],
+    permissions: ["microphone"],
     viewport: { width: 1280, height: 720 },
   });
   session._context = context;
@@ -291,37 +281,32 @@ export async function startMeetBot(
     // ── Navigate to the Meet URL ───────────────────────────
     session.status = "joining";
     logger.info(ctx, "Navigating to Meet URL", { url: session.meetUrl });
+    appendSessionLog(session.id, "info", "Opening Google Meet", { meetUrl: session.meetUrl });
     await page.goto(session.meetUrl, { waitUntil: "networkidle", timeout: 30_000 });
 
     // Give the page a moment to fully render the pre-join screen
     await page.waitForTimeout(5000);
 
     // ── Handle pre-join screen ─────────────────────────────
-    // Turn off microphone if the toggle is visible
-    try {
-      const micButton = page.locator('[aria-label*="microphone" i], [aria-label*="mic" i], [data-is-muted]').first();
-      if (await micButton.isVisible({ timeout: 3000 })) {
-        await micButton.click();
-        logger.info(ctx, "Muted microphone");
-      }
-    } catch {
-      logger.debug(ctx, "Microphone toggle not found or already muted");
-    }
+    await setMicrophoneEnabled(page, false);
 
-    if (useBotBackground) {
-      logger.info(ctx, "Keeping camera on for bot background");
-    } else {
-      // Turn off camera if the toggle is visible
-      try {
-        const cameraButton = page.locator('[aria-label*="camera" i], [aria-label*="video" i]').first();
-        if (await cameraButton.isVisible({ timeout: 3000 })) {
+    // Keep the bot as a named participant only; do not publish video.
+    try {
+      const cameraButton = page.locator('[aria-label*="camera" i], [aria-label*="video" i]').first();
+      if (await cameraButton.isVisible({ timeout: 3000 })) {
+        const cameraLabel = await cameraButton.getAttribute("aria-label") ?? "";
+        if (/turn off|stop|disable/i.test(cameraLabel)) {
           await cameraButton.click();
           logger.info(ctx, "Turned off camera");
+        } else {
+          logger.info(ctx, "Camera is already off");
         }
-      } catch {
-        logger.debug(ctx, "Camera toggle not found or already off");
       }
+    } catch {
+      logger.debug(ctx, "Camera toggle not found or already off");
     }
+
+    await dismissCameraPrompt(page, session.id);
 
     // ── Enter display name if prompted ─────────────────────
     try {
@@ -387,9 +372,11 @@ export async function startMeetBot(
     // ── Verify we're in the meeting ────────────────────────
     session.status = "in-meeting";
     logger.info(ctx, "Successfully joined the meeting");
+    appendSessionLog(session.id, "info", "Successfully joined the meeting");
 
     // ── Start audio recording for Deepgram ─────────────────
     logger.info(ctx, "Starting meeting audio capture...");
+    appendSessionLog(session.id, "info", "Starting meeting audio capture");
     const recordingStartedAt = new Date();
     await startAudioRecording(page);
 
@@ -398,6 +385,10 @@ export async function startMeetBot(
     const recording = await stopAudioRecording(page, audioCapture);
     logger.info(ctx, "Meeting ended. Audio captured.", {
       audioFilePath: recording.filePath,
+      bytes: recording.bytes,
+      contentType: recording.contentType,
+    });
+    appendSessionLog(session.id, "info", "Meeting ended and audio was captured", {
       bytes: recording.bytes,
       contentType: recording.contentType,
     });
@@ -412,13 +403,17 @@ export async function startMeetBot(
     session.transcript = transcript;
     session.endedAt = new Date();
     logger.info(ctx, "Transcript captured.", {
-      segments: transcript.length,
+      segments: session.transcript.length,
+    });
+    appendSessionLog(session.id, "info", "Transcript captured", {
+      segments: session.transcript.length,
     });
 
-    return transcript;
+    return session.transcript;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     logger.error(ctx, "Bot error", { error: message });
+    appendSessionLog(session.id, "error", "Meet bot failed", { error: message });
     session.status = "error";
     session.error = message;
     throw err;
@@ -431,6 +426,55 @@ export async function startMeetBot(
     } catch {
       // Ignore close errors
     }
+  }
+}
+
+async function dismissCameraPrompt(page: Page, sessionId: string): Promise<void> {
+  const ctx = "MeetBot";
+  const promptButton = page.locator(
+    [
+      'button:has-text("Continue without camera")',
+      'button:has-text("Continue without video")',
+      'button:has-text("Join without camera")',
+      'div[role="button"]:has-text("Continue without camera")',
+      'div[role="button"]:has-text("Continue without video")',
+      'div[role="button"]:has-text("Join without camera")',
+    ].join(", "),
+  ).first();
+
+  try {
+    if (await promptButton.isVisible({ timeout: 2500 })) {
+      await promptButton.click();
+      logger.info(ctx, "Dismissed Meet camera prompt");
+      appendSessionLog(sessionId, "info", "Continued without camera");
+      await page.waitForTimeout(500);
+    }
+  } catch {
+    logger.debug(ctx, "Meet camera prompt not shown");
+  }
+}
+
+async function setMicrophoneEnabled(page: Page, enabled: boolean): Promise<void> {
+  const ctx = "MeetBot";
+  try {
+    const micButton = page.locator('[aria-label*="microphone" i], [aria-label*="mic" i], [data-is-muted]').first();
+    if (!(await micButton.isVisible({ timeout: 3000 }))) return;
+
+    const micLabel = await micButton.getAttribute("aria-label") ?? "";
+    const isOn = /turn off|mute|disable/i.test(micLabel);
+    const isOff = /turn on|unmute|enable/i.test(micLabel);
+
+    if (enabled && isOff) {
+      await micButton.click();
+      logger.info(ctx, "Enabled microphone");
+    } else if (!enabled && isOn) {
+      await micButton.click();
+      logger.info(ctx, "Muted microphone");
+    } else {
+      logger.info(ctx, enabled ? "Microphone is already enabled" : "Microphone is already muted");
+    }
+  } catch {
+    logger.debug(ctx, "Microphone toggle not found or state could not be changed");
   }
 }
 

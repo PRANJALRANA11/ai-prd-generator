@@ -62,12 +62,15 @@ This opens a browser window. Log into the dedicated Google account, navigate to 
 npm run dev
 ```
 
-### 5. Start the bot
+Open [http://localhost:3000](http://localhost:3000) to add the bot to a Meet
+call and choose the Slack channel webhook for that session.
+
+### 5. Start the bot from the API
 
 ```bash
 curl -X POST http://localhost:3000/api/start-bot \
   -H "Content-Type: application/json" \
-  -d '{"meetUrl": "https://meet.google.com/xxx-yyyy-zzz"}'
+  -d '{"meetUrl": "https://meet.google.com/xxx-yyyy-zzz", "slackWebhookUrl": "https://hooks.slack.com/services/..."}'
 ```
 
 ## API Endpoints
@@ -75,17 +78,24 @@ curl -X POST http://localhost:3000/api/start-bot \
 | Method | Endpoint               | Description                    |
 |--------|------------------------|--------------------------------|
 | POST   | `/api/start-bot`       | Start the bot with a Meet URL  |
+| POST   | `/api/slack/test`      | Send a test message to a Slack incoming webhook |
 | POST   | `/api/stop-bot`        | Stop a running bot session     |
 | POST   | `/api/slack/prd`       | Slack slash command for PRD Q&A and roadmap updates |
+| GET    | `/api/config`          | Frontend config and setup status |
 | GET    | `/api/status/:id`      | Check bot session status       |
 | GET    | `/health`              | Health check                   |
 
 ### POST /api/start-bot
 
 ```json
-{ "meetUrl": "https://meet.google.com/xxx-yyyy-zzz" }
+{
+  "meetUrl": "https://meet.google.com/xxx-yyyy-zzz",
+  "slackWebhookUrl": "https://hooks.slack.com/services/..."
+}
 ```
 
+`meetUrl` may also be a meeting code such as `xxx-yyyy-zzz`. `slackWebhookUrl`
+is optional; when omitted, the app uses `SLACK_WEBHOOK_URL`.
 **Response (202):**
 ```json
 {
@@ -138,7 +148,7 @@ Examples:
 /prd <sessionId> What are the main risks?
 ```
 
-Questions are answered from the latest completed PRD, transcript, and roadmap context. Roadmap updates rewrite the stored PRD, create a new PRD version, and repost the refreshed PRD using `SLACK_WEBHOOK_URL`.
+Questions are answered from the latest completed PRD, transcript, and roadmap context. Roadmap updates rewrite the stored PRD, create a new PRD version, and repost the refreshed PRD using the session Slack webhook, or `SLACK_WEBHOOK_URL` when no session webhook was provided.
 
 Additional Slack workflow features:
 
@@ -153,7 +163,8 @@ Additional Slack workflow features:
 - Session status, transcripts, generated PRDs, roadmap updates, and PRD version history are stored in PostgreSQL so Slack Q&A works after app restarts.
 - PRDs are posted as Slack Block Kit sections with metadata, command hints, and section-level formatting rather than a raw Markdown dump.
 - Deepgram diarization labels speakers as `Speaker 0`, `Speaker 1`, etc. Raw mixed meeting audio does not include Google Meet participant names.
-- The bot uses a simple generated fake-camera background when `assets/bot-background.y4m` exists. Run `npm run generate-bot-background` to recreate it.
+- The bot keeps camera off in Meet so it appears as a named participant rather than a video/background tile.
+- The bot keeps its microphone muted and captures remote meeting audio for transcription.
 - Incoming webhooks only post messages. Slack questions and roadmap updates require configuring the `/api/slack/prd` slash command endpoint.
 - Google Meet's WebRTC internals may change; if audio capture breaks, the recorder hook in `meetBot.ts` may need updating.
 
