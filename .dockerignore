@@ -1,0 +1,8 @@
+node_modules
+dist
+.git
+.env
+auth-state.json
+recordings
+*.log
+.DS_Store
