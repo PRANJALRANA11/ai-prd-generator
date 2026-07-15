@@ -324,15 +324,16 @@ async function runPipeline(session: BotSession): Promise<void> {
 
   try {
     // Step 1: Join meeting and capture transcript
-	    logger.info(ctx, "Step 1/3: Joining meeting and capturing transcript...", {
-	      sessionId: session.id,
-	    });
-	    appendSessionLog(session.id, "info", "Joining Meet and starting transcript capture");
-	    const transcript = await startMeetBot(
+    logger.info(ctx, "Step 1/3: Joining meeting and capturing transcript...", {
+      sessionId: session.id,
+    });
+    appendSessionLog(session.id, "info", "Joining Meet and starting transcript capture");
+    const transcript = await startMeetBot(
       session,
       config.authStatePath,
       config.botDisplayName,
       config.deepgramApiKey,
+      config.playwrightHeadless,
     );
 
     if (transcript.length === 0) {

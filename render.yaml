@@ -4,11 +4,16 @@ services:
     runtime: docker
     plan: starter
     dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
     envVars:
       - key: NODE_ENV
         value: production
+      - key: PLAYWRIGHT_HEADLESS
+        value: "true"
       - key: BOT_DISPLAY_NAME
         value: AI Notetaker
+      - key: AUTH_STATE_PATH
+        value: /etc/secrets/auth-state.json
       - key: DATABASE_URL
         fromDatabase:
           name: ai-prd-generator-db
@@ -20,8 +25,6 @@ services:
       - key: SLACK_WEBHOOK_URL
         sync: false
       - key: SLACK_SLASH_COMMAND_TOKEN
-        sync: false
-      - key: AUTH_STATE_JSON_BASE64
         sync: false
 
 databases:

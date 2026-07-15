@@ -236,6 +236,7 @@ export async function startMeetBot(
   authStatePath: string,
   botDisplayName: string,
   deepgramApiKey: string,
+  playwrightHeadless = false,
 ): Promise<TranscriptSegment[]> {
   const ctx = "MeetBot";
   const resolvedAuthPath = path.resolve(authStatePath);
@@ -259,7 +260,7 @@ export async function startMeetBot(
   ];
 
   const browser = await chromium.launch({
-    headless: false, // Visible browser so you can watch in real-time
+    headless: playwrightHeadless,
     args: browserArgs,
   });
   session._browser = browser;
