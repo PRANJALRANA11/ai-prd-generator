@@ -23,6 +23,8 @@ HTTP POST /api/start-bot
 - A **Deepgram API key** ([Get one here](https://console.deepgram.com/))
 - A **PostgreSQL database** for stateful sessions, transcripts, PRDs, and roadmap updates
 - A **Slack Incoming Webhook URL** ([Create an incoming webhook](https://api.slack.com/messaging/webhooks))
+- A **Slack Signing Secret** for slash commands and interactive approval buttons
+- A **Linear API key** plus Linear team ID if you want approved PRDs to create Linear tickets
 
 ## Quick Start
 
@@ -81,6 +83,7 @@ curl -X POST http://localhost:3000/api/start-bot \
 | POST   | `/api/slack/test`      | Send a test message to a Slack incoming webhook |
 | POST   | `/api/stop-bot`        | Stop a running bot session     |
 | POST   | `/api/slack/prd`       | Slack slash command for PRD Q&A and roadmap updates |
+| POST   | `/api/slack/interactions` | Slack approval button callbacks for Linear ticket creation |
 | GET    | `/api/config`          | Frontend config and setup status |
 | GET    | `/api/status/:id`      | Check bot session status       |
 | GET    | `/health`              | Health check                   |
@@ -155,6 +158,45 @@ Additional Slack workflow features:
 - `history` lists all PRD versions for the current or targeted session.
 - `show vN` reposts a specific PRD version in the formatted Slack layout.
 - `diff vA vB` summarizes product, scope, roadmap, and risk changes between two versions.
+- Each posted PRD includes an approval button. When approved, the app turns the PRD into coding-agent-ready Linear tickets and posts the ticket links back to Slack.
+
+### Slack Linear Approval Setup
+
+Incoming webhooks can post the PRD, but Slack buttons need an interactive
+callback URL. In your Slack app:
+
+1. Enable **Interactivity & Shortcuts**.
+2. Set the Request URL to:
+
+```text
+https://your-public-server.example.com/api/slack/interactions
+```
+
+3. Copy the app **Signing Secret** into `SLACK_SIGNING_SECRET`.
+4. Keep the slash command Request URL as:
+
+```text
+https://your-public-server.example.com/api/slack/prd
+```
+
+Configure Linear with:
+
+```text
+LINEAR_API_KEY=...
+LINEAR_TEAM_ID=...
+```
+
+Optional Linear targeting:
+
+```text
+LINEAR_PROJECT_ID=...
+LINEAR_ASSIGNEE_ID=...
+LINEAR_LABEL_IDS=label_uuid_one,label_uuid_two
+```
+
+The approval flow is idempotent per PRD session. If Slack retries an approval or
+someone clicks again, the app returns the already-created Linear ticket links
+instead of creating duplicates.
 
 ## Important Notes
 
@@ -162,6 +204,7 @@ Additional Slack workflow features:
 - Meeting audio is recorded to `recordings/<sessionId>.webm` and sent to Deepgram after the call ends. The `recordings/` directory is ignored by Git.
 - Session status, transcripts, generated PRDs, roadmap updates, and PRD version history are stored in PostgreSQL so Slack Q&A works after app restarts.
 - PRDs are posted as Slack Block Kit sections with metadata, command hints, and section-level formatting rather than a raw Markdown dump.
+- Linear approvals require Slack Interactivity & Shortcuts configured at `/api/slack/interactions`; an incoming webhook alone cannot receive button clicks.
 - Deepgram diarization labels speakers as `Speaker 0`, `Speaker 1`, etc. Raw mixed meeting audio does not include Google Meet participant names.
 - The bot keeps camera off in Meet so it appears as a named participant rather than a video/background tile.
 - The bot keeps its microphone muted and captures remote meeting audio for transcription.
@@ -205,6 +248,9 @@ GEMINI_API_KEY=...
 DEEPGRAM_API_KEY=...
 DATABASE_URL=...
 SLACK_WEBHOOK_URL=...
+SLACK_SIGNING_SECRET=...
+LINEAR_API_KEY=...
+LINEAR_TEAM_ID=...
 BOT_DISPLAY_NAME=AI Notetaker
 AUTH_STATE_PATH=/etc/secrets/auth-state.json
 PLAYWRIGHT_HEADLESS=true
@@ -214,6 +260,9 @@ Optional:
 
 ```text
 SLACK_SLASH_COMMAND_TOKEN=...
+LINEAR_PROJECT_ID=...
+LINEAR_ASSIGNEE_ID=...
+LINEAR_LABEL_IDS=label_uuid_one,label_uuid_two
 ```
 
 ### 3. Verify
@@ -236,6 +285,12 @@ Use this URL for the Slack slash command:
 https://your-render-service.onrender.com/api/slack/prd
 ```
 
+Use this URL for Slack Interactivity & Shortcuts:
+
+```text
+https://your-render-service.onrender.com/api/slack/interactions
+```
+
 ## Tech Stack
 
 - **Runtime**: Node.js + TypeScript
@@ -243,5 +298,6 @@ https://your-render-service.onrender.com/api/slack/prd
 - **Speech-to-Text**: Deepgram Nova-3 with utterances and diarization
 - **LLM**: Google Gemini (gemini-2.5-flash)
 - **Database**: PostgreSQL
-- **Messaging**: Slack incoming webhooks and slash commands
+- **Messaging**: Slack incoming webhooks, slash commands, and interactive buttons
+- **Issue Tracking**: Linear GraphQL API
 - **Server**: Express

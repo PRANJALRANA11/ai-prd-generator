@@ -6,6 +6,12 @@ export interface AppConfig {
   databaseUrl: string;
   slackWebhookUrl: string;
   slackSlashCommandToken?: string;
+  slackSigningSecret?: string;
+  linearApiKey?: string;
+  linearTeamId?: string;
+  linearProjectId?: string;
+  linearAssigneeId?: string;
+  linearLabelIds: string[];
   botDisplayName: string;
   port: number;
   authStatePath: string;
@@ -27,6 +33,12 @@ export function loadConfig(): AppConfig {
     databaseUrl: requireEnv("DATABASE_URL"),
     slackWebhookUrl: requireEnv("SLACK_WEBHOOK_URL"),
     slackSlashCommandToken: process.env.SLACK_SLASH_COMMAND_TOKEN,
+    slackSigningSecret: process.env.SLACK_SIGNING_SECRET,
+    linearApiKey: process.env.LINEAR_API_KEY,
+    linearTeamId: process.env.LINEAR_TEAM_ID,
+    linearProjectId: process.env.LINEAR_PROJECT_ID,
+    linearAssigneeId: process.env.LINEAR_ASSIGNEE_ID,
+    linearLabelIds: parseCsvEnv(process.env.LINEAR_LABEL_IDS),
     botDisplayName: process.env.BOT_DISPLAY_NAME ?? "AI Notetaker",
     port: parseInt(process.env.PORT ?? "3000", 10),
     authStatePath: process.env.AUTH_STATE_PATH ?? "./auth-state.json",
@@ -37,4 +49,12 @@ export function loadConfig(): AppConfig {
 function parseBooleanEnv(value: string | undefined, defaultValue: boolean): boolean {
   if (value === undefined) return defaultValue;
   return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
+}
+
+function parseCsvEnv(value: string | undefined): string[] {
+  if (!value) return [];
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
 }

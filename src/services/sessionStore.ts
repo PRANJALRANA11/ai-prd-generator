@@ -10,6 +10,25 @@ export interface PRDVersion {
   createdAt: Date;
 }
 
+export interface LinearIssueRecord {
+  sessionId: string;
+  linearId: string;
+  identifier?: string;
+  title: string;
+  url?: string;
+  createdAt: Date;
+}
+
+export interface LinearIssueBatch {
+  sessionId: string;
+  status: "creating" | "created" | "error";
+  approvedBy?: string;
+  approvedAt?: Date;
+  error?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export class PostgresSessionStore {
   private readonly pool: Pool;
 
@@ -79,6 +98,30 @@ export class PostgresSessionStore {
           FROM prd_versions
           WHERE prd_versions.session_id = bot_sessions.id
         )
+    `);
+
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS linear_issue_batches (
+        session_id UUID PRIMARY KEY REFERENCES bot_sessions(id) ON DELETE CASCADE,
+        status TEXT NOT NULL,
+        approved_by TEXT,
+        approved_at TIMESTAMPTZ,
+        error TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS linear_issues (
+        session_id UUID NOT NULL REFERENCES bot_sessions(id) ON DELETE CASCADE,
+        linear_id TEXT NOT NULL,
+        identifier TEXT,
+        title TEXT NOT NULL,
+        url TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (session_id, linear_id)
+      )
     `);
   }
 
@@ -237,6 +280,115 @@ export class PostgresSessionStore {
     return result.rows[0] ? rowToPRDVersion(result.rows[0]) : null;
   }
 
+  async getLinearIssueBatch(sessionId: string): Promise<LinearIssueBatch | null> {
+    const result = await this.pool.query(
+      `
+        SELECT *
+        FROM linear_issue_batches
+        WHERE session_id::text = $1
+      `,
+      [sessionId],
+    );
+
+    return result.rows[0] ? rowToLinearIssueBatch(result.rows[0]) : null;
+  }
+
+  async markLinearIssueBatch(
+    sessionId: string,
+    status: LinearIssueBatch["status"],
+    options: {
+      approvedBy?: string;
+      approvedAt?: Date;
+      error?: string;
+    } = {},
+  ): Promise<LinearIssueBatch> {
+    const result = await this.pool.query(
+      `
+        INSERT INTO linear_issue_batches (
+          session_id,
+          status,
+          approved_by,
+          approved_at,
+          error,
+          updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, NOW())
+        ON CONFLICT (session_id) DO UPDATE SET
+          status = EXCLUDED.status,
+          approved_by = COALESCE(EXCLUDED.approved_by, linear_issue_batches.approved_by),
+          approved_at = COALESCE(EXCLUDED.approved_at, linear_issue_batches.approved_at),
+          error = EXCLUDED.error,
+          updated_at = NOW()
+        RETURNING *
+      `,
+      [
+        sessionId,
+        status,
+        options.approvedBy ?? null,
+        options.approvedAt ?? null,
+        options.error ?? null,
+      ],
+    );
+
+    return rowToLinearIssueBatch(result.rows[0]);
+  }
+
+  async getLinearIssues(sessionId: string): Promise<LinearIssueRecord[]> {
+    const result = await this.pool.query(
+      `
+        SELECT *
+        FROM linear_issues
+        WHERE session_id::text = $1
+        ORDER BY created_at ASC
+      `,
+      [sessionId],
+    );
+
+    return result.rows.map(rowToLinearIssueRecord);
+  }
+
+  async saveLinearIssues(sessionId: string, issues: Array<{
+    id: string;
+    identifier?: string;
+    title: string;
+    url?: string;
+  }>): Promise<LinearIssueRecord[]> {
+    if (issues.length === 0) {
+      return [];
+    }
+
+    const saved: LinearIssueRecord[] = [];
+    for (const issue of issues) {
+      const result = await this.pool.query(
+        `
+          INSERT INTO linear_issues (
+            session_id,
+            linear_id,
+            identifier,
+            title,
+            url
+          )
+          VALUES ($1, $2, $3, $4, $5)
+          ON CONFLICT (session_id, linear_id) DO UPDATE SET
+            identifier = EXCLUDED.identifier,
+            title = EXCLUDED.title,
+            url = EXCLUDED.url
+          RETURNING *
+        `,
+        [
+          sessionId,
+          issue.id,
+          issue.identifier ?? null,
+          issue.title,
+          issue.url ?? null,
+        ],
+      );
+      saved.push(rowToLinearIssueRecord(result.rows[0]));
+    }
+
+    return saved;
+  }
+
   async close(): Promise<void> {
     await this.pool.end();
   }
@@ -249,6 +401,29 @@ function rowToPRDVersion(row: Record<string, unknown>): PRDVersion {
     prd: String(row.prd),
     roadmapNotes: typeof row.roadmap_notes === "string" ? row.roadmap_notes : undefined,
     changeSummary: typeof row.change_summary === "string" ? row.change_summary : undefined,
+    createdAt: new Date(row.created_at as string | Date),
+  };
+}
+
+function rowToLinearIssueBatch(row: Record<string, unknown>): LinearIssueBatch {
+  return {
+    sessionId: String(row.session_id),
+    status: row.status as LinearIssueBatch["status"],
+    approvedBy: typeof row.approved_by === "string" ? row.approved_by : undefined,
+    approvedAt: row.approved_at ? new Date(row.approved_at as string | Date) : undefined,
+    error: typeof row.error === "string" ? row.error : undefined,
+    createdAt: new Date(row.created_at as string | Date),
+    updatedAt: new Date(row.updated_at as string | Date),
+  };
+}
+
+function rowToLinearIssueRecord(row: Record<string, unknown>): LinearIssueRecord {
+  return {
+    sessionId: String(row.session_id),
+    linearId: String(row.linear_id),
+    identifier: typeof row.identifier === "string" ? row.identifier : undefined,
+    title: String(row.title),
+    url: typeof row.url === "string" ? row.url : undefined,
     createdAt: new Date(row.created_at as string | Date),
   };
 }

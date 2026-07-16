@@ -118,6 +118,43 @@ function buildPRDMessages(prdMarkdown: string, metadata?: PRDMetadata): SlackWeb
     });
   }
 
+  if (metadata?.sessionId) {
+    introBlocks.push({
+      type: "actions",
+      elements: [
+        {
+          type: "button",
+          action_id: "approve_linear_tickets",
+          style: "primary",
+          text: {
+            type: "plain_text",
+            text: "Approve Linear Tickets",
+            emoji: true,
+          },
+          value: metadata.sessionId,
+          confirm: {
+            title: {
+              type: "plain_text",
+              text: "Create Linear tickets?",
+            },
+            text: {
+              type: "mrkdwn",
+              text: "This will turn the approved PRD into coding-agent-ready Linear tickets.",
+            },
+            confirm: {
+              type: "plain_text",
+              text: "Create tickets",
+            },
+            deny: {
+              type: "plain_text",
+              text: "Cancel",
+            },
+          },
+        },
+      ],
+    });
+  }
+
   introBlocks.push({
     type: "context",
     elements: [
