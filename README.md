@@ -79,12 +79,15 @@ curl -X POST http://localhost:3000/api/start-bot \
 
 | Method | Endpoint               | Description                    |
 |--------|------------------------|--------------------------------|
+| GET    | `/codex-live`          | Live Codex coding-session dashboard |
 | POST   | `/api/start-bot`       | Start the bot with a Meet URL  |
-| POST   | `/api/slack/test`      | Send a test message to a Slack incoming webhook |
 | POST   | `/api/stop-bot`        | Stop a running bot session     |
 | POST   | `/api/slack/prd`       | Slack slash command for PRD Q&A and roadmap updates |
 | POST   | `/api/slack/interactions` | Slack approval button callbacks for Linear ticket creation |
 | GET    | `/api/config`          | Frontend config and setup status |
+| GET    | `/api/coding/tasks`    | Recent Codex automation tasks |
+| GET    | `/api/coding/tasks/:id` | Live Codex task snapshot |
+| GET    | `/api/coding/tasks/:id/file` | Safe file preview for a Codex task |
 | GET    | `/api/status/:id`      | Check bot session status       |
 | GET    | `/health`              | Health check                   |
 
@@ -192,11 +195,48 @@ Optional Linear targeting:
 LINEAR_PROJECT_ID=...
 LINEAR_ASSIGNEE_ID=...
 LINEAR_LABEL_IDS=label_uuid_one,label_uuid_two
+LINEAR_DONE_STATE_ID=...
 ```
+
+`LINEAR_DONE_STATE_ID` is optional. If it is omitted, the app tries to close
+merged work with a completed/done state from `LINEAR_TEAM_ID`.
 
 The approval flow is idempotent per PRD session. If Slack retries an approval or
 someone clicks again, the app returns the already-created Linear ticket links
 instead of creating duplicates.
+
+### GitHub + Codex automation
+
+When GitHub automation is configured, every approved Linear ticket is mirrored
+to a GitHub issue. If `CODING_AGENT_ENABLED=true`, a background worker picks up
+those issues, creates a branch in the configured repo, runs the Codex CLI command,
+pushes changes, opens a PR, and posts a Slack review card. The Slack card links
+the PR, Linear ticket, PRD item, code-change summary, and Live Codex session.
+Clicking **Merge PR** in Slack squash-merges the PR, closes the GitHub issue,
+closes the linked Linear ticket, and posts the final summary to Slack.
+
+```text
+GITHUB_TOKEN=...
+GITHUB_REPO=owner/repo
+GITHUB_USERNAME=your_github_username
+OPENAI_API_KEY=...
+GITHUB_ISSUE_LABELS=prd-generated,codex-agent
+CODING_AGENT_ENABLED=true
+CODING_AGENT_BASE_BRANCH=master
+CODING_AGENT_WORKDIR=/tmp/ai-prd-coding-agent
+CODING_AGENT_COMMAND=codex exec --model gpt-4o-mini --full-auto --skip-git-repo-check {prompt}
+```
+
+`CODING_AGENT_COMMAND` is intentionally configurable because Codex CLI
+installations and safety flags can differ by environment. The backend writes a
+task prompt file and replaces `{prompt}`, `{promptFile}`, and `{branch}` before
+running the command. Older commands using `--input-file {promptFile}` are
+normalized to the current Codex positional prompt format automatically.
+
+On Render, Codex runs inside the same Docker web service. The Dockerfile installs
+`@openai/codex` globally, `OPENAI_API_KEY` authenticates the Codex CLI, and
+`GITHUB_TOKEN` is used only for cloning/pushing the target repo and creating
+GitHub issues/PRs. Use a GitHub token with access to `GITHUB_REPO`.
 
 ## Important Notes
 
@@ -248,6 +288,7 @@ GEMINI_API_KEY=...
 DEEPGRAM_API_KEY=...
 DATABASE_URL=...
 SLACK_WEBHOOK_URL=...
+PUBLIC_BASE_URL=https://your-render-service.onrender.com
 SLACK_SIGNING_SECRET=...
 LINEAR_API_KEY=...
 LINEAR_TEAM_ID=...
@@ -264,6 +305,16 @@ SLACK_INVITE_URL=...
 LINEAR_PROJECT_ID=...
 LINEAR_ASSIGNEE_ID=...
 LINEAR_LABEL_IDS=label_uuid_one,label_uuid_two
+LINEAR_DONE_STATE_ID=...
+GITHUB_TOKEN=...
+GITHUB_REPO=owner/repo
+GITHUB_USERNAME=your_github_username
+OPENAI_API_KEY=...
+GITHUB_ISSUE_LABELS=prd-generated,codex-agent
+CODING_AGENT_ENABLED=true
+CODING_AGENT_BASE_BRANCH=master
+CODING_AGENT_WORKDIR=/tmp/ai-prd-coding-agent
+CODING_AGENT_COMMAND=codex exec --model gpt-4o-mini --full-auto --skip-git-repo-check {prompt}
 ```
 
 ### 3. Verify

@@ -1,0 +1,291 @@
+import { execFile, spawn } from "child_process";
+import { promisify } from "util";
+import path from "path";
+import { mkdir, rm, writeFile, appendFile } from "fs/promises";
+import { logger } from "../utils/logger.js";
+import type { GitHubRepoRef } from "./githubService.js";
+import { repoToString } from "./githubService.js";
+
+const execFileAsync = promisify(execFile);
+
+export interface CodingAgentConfig {
+  githubToken: string;
+  githubRepo: GitHubRepoRef;
+  githubUsername?: string;
+  workdir: string;
+  baseBranch: string;
+  command?: string;
+  timeoutMs: number;
+}
+
+export interface CodingAgentTask {
+  automationId: string;
+  sessionId: string;
+  prdItem: string;
+  linearIdentifier?: string;
+  linearUrl?: string;
+  githubIssueNumber: number;
+  githubIssueUrl: string;
+  title: string;
+  description: string;
+}
+
+export interface CodingAgentResult {
+  branchName: string;
+  commitSha: string;
+  changeSummary: string;
+}
+
+export async function runCodingAgentTask(
+  config: CodingAgentConfig,
+  task: CodingAgentTask,
+): Promise<CodingAgentResult> {
+  const branchName = buildBranchName(task);
+  const taskDir = path.join(config.workdir, task.automationId);
+  const promptPath = path.join(taskDir, ".codex-task.md");
+
+  await rm(taskDir, { recursive: true, force: true });
+  await mkdir(config.workdir, { recursive: true });
+
+  await runGitWithAuth([
+    "clone",
+    "--depth",
+    "1",
+    "--branch",
+    config.baseBranch,
+    `https://github.com/${repoToString(config.githubRepo)}.git`,
+    taskDir,
+  ], config.githubToken, config.githubRepo, config.githubUsername);
+
+  await runGit(["checkout", "-b", branchName], taskDir);
+
+  const prompt = buildAgentPrompt(task);
+  await writeFile(promptPath, prompt, "utf8");
+
+  const command = materializeAgentCommand(config.command, promptPath, branchName, prompt);
+  const agentOutput = await runShell(command, taskDir, config.timeoutMs, {
+    logFilePath: path.join(taskDir, "codex-run.log"),
+    logContext: `Codex:${task.linearIdentifier ?? task.githubIssueNumber}`,
+  });
+
+  await runGit(["add", "-A"], taskDir);
+  const hasChanges = await hasStagedChanges(taskDir);
+  if (!hasChanges) {
+    throw new Error("Coding agent finished without producing code changes.");
+  }
+
+  const changeSummary = await runGit(["diff", "--cached", "--stat"], taskDir);
+  await runGit(["commit", "-m", `Implement ${task.linearIdentifier ?? `GitHub issue #${task.githubIssueNumber}`}`], taskDir);
+  const commitSha = (await runGit(["rev-parse", "HEAD"], taskDir)).trim();
+  await runGitWithAuth(["push", "origin", branchName], config.githubToken, config.githubRepo, config.githubUsername, taskDir);
+
+  return {
+    branchName,
+    commitSha,
+    changeSummary: [
+      changeSummary.trim(),
+      agentOutput.trim() ? `\nAgent output:\n${trimLong(agentOutput.trim(), 3000)}` : undefined,
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  };
+}
+
+function buildAgentPrompt(task: CodingAgentTask): string {
+  return [
+    "# Coding Agent Task",
+    "",
+    `GitHub issue: #${task.githubIssueNumber} ${task.githubIssueUrl}`,
+    task.linearIdentifier
+      ? `Linear ticket: ${task.linearIdentifier}${task.linearUrl ? ` ${task.linearUrl}` : ""}`
+      : undefined,
+    `PRD session: ${task.sessionId}`,
+    `PRD item: ${task.prdItem}`,
+    "",
+    "## Title",
+    task.title,
+    "",
+    "## Requirements",
+    task.description,
+    "",
+    "## Instructions",
+    "- Inspect the repository before editing.",
+    "- Make the smallest complete code change that satisfies the ticket.",
+    "- Add or update tests when the change has meaningful behavior risk.",
+    "- Run the relevant local checks when available.",
+    "- Do not merge the pull request. This backend will request review in Slack first.",
+    "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function materializeAgentCommand(
+  commandTemplate: string | undefined,
+  promptPath: string,
+  branchName: string,
+  prompt: string,
+): string {
+  const template = commandTemplate
+    ?? "codex exec --model gpt-4o-mini --full-auto --skip-git-repo-check {prompt}";
+
+  const normalizedTemplate = template.replace(/--input-file\s+\{promptFile\}/g, "{prompt}");
+
+  return normalizedTemplate
+    .replaceAll("{promptFile}", shellQuote(promptPath))
+    .replaceAll("{prompt}", shellQuote(prompt))
+    .replaceAll("{branch}", shellQuote(branchName));
+}
+
+function buildBranchName(task: CodingAgentTask): string {
+  const label = task.linearIdentifier ?? `issue-${task.githubIssueNumber}`;
+  const title = task.title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 42);
+  return `codex/${label.toLowerCase()}-${title || "task"}`;
+}
+
+async function hasStagedChanges(cwd: string): Promise<boolean> {
+  const result = await execFileAsync("git", ["diff", "--cached", "--quiet"], { cwd })
+    .then(() => 0)
+    .catch((err: { code?: number }) => err.code ?? 1);
+  return result === 1;
+}
+
+async function runGit(args: string[], cwd?: string): Promise<string> {
+  try {
+    const result = await execFileAsync("git", args, {
+      cwd,
+      maxBuffer: 1024 * 1024 * 8,
+    });
+    return [result.stdout, result.stderr].filter(Boolean).join("\n");
+  } catch (err) {
+    throw sanitizeExecError(err);
+  }
+}
+
+async function runGitWithAuth(
+  args: string[],
+  token: string,
+  repo: GitHubRepoRef,
+  username?: string,
+  cwd?: string,
+): Promise<string> {
+  const gitUsername = username?.trim() || repo.owner;
+  const basicAuth = Buffer.from(`${gitUsername}:${token}`, "utf8").toString("base64");
+
+  try {
+    const result = await execFileAsync("git", args, {
+      cwd,
+      env: {
+        ...process.env,
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
+        GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${basicAuth}`,
+      },
+      maxBuffer: 1024 * 1024 * 8,
+    });
+    return [result.stdout, result.stderr].filter(Boolean).join("\n");
+  } catch (err) {
+    throw sanitizeExecError(err);
+  }
+}
+
+function runShell(
+  command: string,
+  cwd: string,
+  timeoutMs: number,
+  options: {
+    logFilePath?: string;
+    logContext?: string;
+  } = {},
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, {
+      cwd,
+      shell: true,
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let output = "";
+    const timeout = setTimeout(() => {
+      child.kill("SIGTERM");
+      reject(new Error(`Command timed out after ${Math.round(timeoutMs / 1000)}s: ${command}`));
+    }, timeoutMs);
+
+    child.stdout.on("data", (chunk: Buffer) => {
+      const text = chunk.toString();
+      output += text;
+      streamProcessOutput("stdout", text, options);
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      const text = chunk.toString();
+      output += text;
+      streamProcessOutput("stderr", text, options);
+    });
+    child.on("error", (err) => {
+      clearTimeout(timeout);
+      reject(err);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timeout);
+      if (code === 0) {
+        resolve(output);
+      } else {
+        reject(new Error(`Command failed (${code}): ${command}\n${trimLong(output, 4000)}`));
+      }
+    });
+  });
+}
+
+function streamProcessOutput(
+  stream: "stdout" | "stderr",
+  text: string,
+  options: {
+    logFilePath?: string;
+    logContext?: string;
+  },
+): void {
+  const cleaned = redactSecrets(text);
+  if (options.logFilePath) {
+    void appendFile(options.logFilePath, cleaned, "utf8").catch((err: unknown) => {
+      logger.warn("CodingAgent", "Could not append process log", {
+        logFilePath: options.logFilePath,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+  }
+
+  const lines = cleaned.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  for (const line of lines.slice(-20)) {
+    logger.info(options.logContext ?? "CodingAgentProcess", line, { stream });
+  }
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function trimLong(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, maxLength - 20)}\n...truncated...`;
+}
+
+function sanitizeExecError(err: unknown): Error {
+  if (!(err instanceof Error)) return new Error(redactSecrets(String(err)));
+  const sanitized = new Error(redactSecrets(err.message));
+  sanitized.stack = err.stack ? redactSecrets(err.stack) : undefined;
+  return sanitized;
+}
+
+function redactSecrets(value: string): string {
+  return value
+    .replace(/https:\/\/x-access-token:[^@\s]+@github\.com/g, "https://x-access-token:[redacted]@github.com")
+    .replace(/https:\/\/[^:\s]+:github_pat_[^@\s]+@github\.com/g, "https://[redacted-user]:[redacted-token]@github.com")
+    .replace(/https:\/\/[^:\s]+:gh[pousr]_[^@\s]+@github\.com/g, "https://[redacted-user]:[redacted-token]@github.com")
+    .replace(/https:\/\/github_pat_[^@\s]+@github\.com/g, "https://[redacted-token]@github.com")
+    .replace(/https:\/\/gh[pousr]_[^@\s]+@github\.com/g, "https://[redacted-token]@github.com");
+}

@@ -18,6 +18,12 @@ export interface LinearCreateConfig {
   labelIds?: string[];
 }
 
+export interface LinearCloseConfig {
+  apiKey: string;
+  doneStateId?: string;
+  teamId?: string;
+}
+
 export interface LinearCreateContext {
   sessionId: string;
   meetUrl?: string;
@@ -37,6 +43,23 @@ interface IssueCreateResponse {
   };
 }
 
+interface IssueUpdateResponse {
+  issueUpdate?: {
+    success: boolean;
+    issue?: LinearIssue;
+  };
+}
+
+interface WorkflowStatesResponse {
+  workflowStates?: {
+    nodes: Array<{
+      id: string;
+      name: string;
+      type?: string;
+    }>;
+  };
+}
+
 const LINEAR_GRAPHQL_URL = "https://api.linear.app/graphql";
 
 const ISSUE_CREATE_MUTATION = `
@@ -48,6 +71,32 @@ const ISSUE_CREATE_MUTATION = `
         identifier
         title
         url
+      }
+    }
+  }
+`;
+
+const ISSUE_UPDATE_MUTATION = `
+  mutation IssueUpdate($id: String!, $input: IssueUpdateInput!) {
+    issueUpdate(id: $id, input: $input) {
+      success
+      issue {
+        id
+        identifier
+        title
+        url
+      }
+    }
+  }
+`;
+
+const WORKFLOW_STATES_QUERY = `
+  query WorkflowStates($teamId: ID!) {
+    workflowStates(filter: { team: { id: { eq: $teamId } } }) {
+      nodes {
+        id
+        name
+        type
       }
     }
   }
@@ -83,6 +132,46 @@ export async function createLinearIssues(
   }
 
   return issues;
+}
+
+export async function closeLinearIssue(
+  config: LinearCloseConfig,
+  linearIssueId: string,
+): Promise<LinearIssue> {
+  const doneStateId = config.doneStateId ?? await findDoneStateId(config);
+  if (!doneStateId) {
+    throw new Error("Linear close requires LINEAR_DONE_STATE_ID or a team workflow state named Done/Completed.");
+  }
+
+  const response = await linearGraphQL<IssueUpdateResponse>(config.apiKey, ISSUE_UPDATE_MUTATION, {
+    id: linearIssueId,
+    input: {
+      stateId: doneStateId,
+    },
+  });
+
+  if (!response.issueUpdate?.success || !response.issueUpdate.issue) {
+    throw new Error(`Linear issue close failed for "${linearIssueId}".`);
+  }
+
+  return response.issueUpdate.issue;
+}
+
+async function findDoneStateId(config: LinearCloseConfig): Promise<string | undefined> {
+  if (!config.teamId) return undefined;
+
+  const response = await linearGraphQL<WorkflowStatesResponse>(config.apiKey, WORKFLOW_STATES_QUERY, {
+    teamId: config.teamId,
+  });
+  const states = response.workflowStates?.nodes ?? [];
+  return states.find((state) => state.type === "completed")?.id
+    ?? states.find((state) => /^(done|completed)$/i.test(state.name.trim()))?.id
+    ?? states.find((state) => /done|complete|merged|shipped/i.test(state.name))?.id;
+}
+
+export function buildLinearTicketBacklink(issue: LinearIssue | { identifier?: string; title: string; url?: string }): string {
+  const label = issue.identifier ?? issue.title;
+  return issue.url ? `[${label}](${issue.url})` : label;
 }
 
 function buildIssueDescription(description: string, context: LinearCreateContext): string {

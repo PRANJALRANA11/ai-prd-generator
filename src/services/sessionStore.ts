@@ -1,4 +1,5 @@
 import { Pool } from "pg";
+import crypto from "crypto";
 import type { BotSession } from "./meetBot.js";
 
 export interface PRDVersion {
@@ -25,6 +26,37 @@ export interface LinearIssueBatch {
   approvedBy?: string;
   approvedAt?: Date;
   error?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export type CodingAutomationStatus =
+  | "pending_github_issue"
+  | "github_issue_created"
+  | "codex_running"
+  | "pr_open"
+  | "merged"
+  | "closed"
+  | "error";
+
+export interface CodingAutomationRecord {
+  id: string;
+  sessionId: string;
+  linearId: string;
+  linearIdentifier?: string;
+  linearTitle: string;
+  linearUrl?: string;
+  githubIssueNumber?: number;
+  githubIssueUrl?: string;
+  githubPrNumber?: number;
+  githubPrUrl?: string;
+  branchName?: string;
+  prdItem?: string;
+  status: CodingAutomationStatus;
+  codexSummary?: string;
+  error?: string;
+  approvedBy?: string;
+  mergedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -122,6 +154,38 @@ export class PostgresSessionStore {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         PRIMARY KEY (session_id, linear_id)
       )
+    `);
+
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS coding_automation_tasks (
+        id UUID PRIMARY KEY,
+        session_id UUID NOT NULL REFERENCES bot_sessions(id) ON DELETE CASCADE,
+        linear_id TEXT NOT NULL,
+        linear_identifier TEXT,
+        linear_title TEXT NOT NULL,
+        linear_url TEXT,
+        github_issue_number INTEGER,
+        github_issue_url TEXT,
+        github_pr_number INTEGER,
+        github_pr_url TEXT,
+        branch_name TEXT,
+        preview_url TEXT,
+        prd_item TEXT,
+        status TEXT NOT NULL,
+        codex_summary TEXT,
+        test_summary TEXT,
+        error TEXT,
+        approved_by TEXT,
+        merged_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (linear_id)
+      )
+    `);
+
+    await this.pool.query(`
+      CREATE INDEX IF NOT EXISTS coding_automation_tasks_status_idx
+      ON coding_automation_tasks (status, updated_at ASC)
     `);
   }
 
@@ -389,6 +453,151 @@ export class PostgresSessionStore {
     return saved;
   }
 
+  async createCodingAutomationTask(
+    sessionId: string,
+    issue: LinearIssueRecord,
+    options: {
+      prdItem?: string;
+    } = {},
+  ): Promise<CodingAutomationRecord> {
+    const result = await this.pool.query(
+      `
+        INSERT INTO coding_automation_tasks (
+          id,
+          session_id,
+          linear_id,
+          linear_identifier,
+          linear_title,
+          linear_url,
+          prd_item,
+          status,
+          updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending_github_issue', NOW())
+        ON CONFLICT (linear_id) DO UPDATE SET
+          session_id = EXCLUDED.session_id,
+          linear_identifier = EXCLUDED.linear_identifier,
+          linear_title = EXCLUDED.linear_title,
+          linear_url = EXCLUDED.linear_url,
+          prd_item = COALESCE(coding_automation_tasks.prd_item, EXCLUDED.prd_item),
+          updated_at = NOW()
+        RETURNING *
+      `,
+      [
+        crypto.randomUUID(),
+        sessionId,
+        issue.linearId,
+        issue.identifier ?? null,
+        issue.title,
+        issue.url ?? null,
+        options.prdItem ?? issue.title,
+      ],
+    );
+
+    return rowToCodingAutomationRecord(result.rows[0]);
+  }
+
+  async getCodingAutomationTask(id: string): Promise<CodingAutomationRecord | null> {
+    const result = await this.pool.query(
+      `
+        SELECT *
+        FROM coding_automation_tasks
+        WHERE id::text = $1
+      `,
+      [id],
+    );
+
+    return result.rows[0] ? rowToCodingAutomationRecord(result.rows[0]) : null;
+  }
+
+  async listCodingAutomationTasks(
+    statuses: CodingAutomationStatus[],
+    limit = 5,
+  ): Promise<CodingAutomationRecord[]> {
+    if (statuses.length === 0) return [];
+    const result = await this.pool.query(
+      `
+        SELECT *
+        FROM coding_automation_tasks
+        WHERE status = ANY($1::text[])
+        ORDER BY updated_at ASC
+        LIMIT $2
+      `,
+      [statuses, limit],
+    );
+
+    return result.rows.map(rowToCodingAutomationRecord);
+  }
+
+  async listRecentCodingAutomationTasks(limit = 20): Promise<CodingAutomationRecord[]> {
+    const result = await this.pool.query(
+      `
+        SELECT *
+        FROM coding_automation_tasks
+        ORDER BY updated_at DESC
+        LIMIT $1
+      `,
+      [limit],
+    );
+
+    return result.rows.map(rowToCodingAutomationRecord);
+  }
+
+  async updateCodingAutomationTask(
+    id: string,
+    status: CodingAutomationStatus,
+    fields: Partial<{
+      githubIssueNumber: number;
+      githubIssueUrl: string;
+      githubPrNumber: number;
+      githubPrUrl: string;
+      branchName: string;
+      codexSummary: string;
+      error: string;
+      approvedBy: string;
+      mergedAt: Date;
+    }> = {},
+  ): Promise<CodingAutomationRecord> {
+    const result = await this.pool.query(
+      `
+        UPDATE coding_automation_tasks
+        SET
+          status = $2,
+          github_issue_number = COALESCE($3, github_issue_number),
+          github_issue_url = COALESCE($4, github_issue_url),
+          github_pr_number = COALESCE($5, github_pr_number),
+          github_pr_url = COALESCE($6, github_pr_url),
+          branch_name = COALESCE($7, branch_name),
+          codex_summary = COALESCE($8, codex_summary),
+          error = $9,
+          approved_by = COALESCE($10, approved_by),
+          merged_at = COALESCE($11, merged_at),
+          updated_at = NOW()
+        WHERE id::text = $1
+        RETURNING *
+      `,
+      [
+        id,
+        status,
+        fields.githubIssueNumber ?? null,
+        fields.githubIssueUrl ?? null,
+        fields.githubPrNumber ?? null,
+        fields.githubPrUrl ?? null,
+        fields.branchName ?? null,
+        fields.codexSummary ?? null,
+        fields.error ?? null,
+        fields.approvedBy ?? null,
+        fields.mergedAt ?? null,
+      ],
+    );
+
+    if (!result.rows[0]) {
+      throw new Error(`Coding automation task not found: ${id}`);
+    }
+
+    return rowToCodingAutomationRecord(result.rows[0]);
+  }
+
   async close(): Promise<void> {
     await this.pool.end();
   }
@@ -425,6 +634,34 @@ function rowToLinearIssueRecord(row: Record<string, unknown>): LinearIssueRecord
     title: String(row.title),
     url: typeof row.url === "string" ? row.url : undefined,
     createdAt: new Date(row.created_at as string | Date),
+  };
+}
+
+function rowToCodingAutomationRecord(row: Record<string, unknown>): CodingAutomationRecord {
+  return {
+    id: String(row.id),
+    sessionId: String(row.session_id),
+    linearId: String(row.linear_id),
+    linearIdentifier: typeof row.linear_identifier === "string" ? row.linear_identifier : undefined,
+    linearTitle: String(row.linear_title),
+    linearUrl: typeof row.linear_url === "string" ? row.linear_url : undefined,
+    githubIssueNumber: row.github_issue_number === null || row.github_issue_number === undefined
+      ? undefined
+      : Number(row.github_issue_number),
+    githubIssueUrl: typeof row.github_issue_url === "string" ? row.github_issue_url : undefined,
+    githubPrNumber: row.github_pr_number === null || row.github_pr_number === undefined
+      ? undefined
+      : Number(row.github_pr_number),
+    githubPrUrl: typeof row.github_pr_url === "string" ? row.github_pr_url : undefined,
+    branchName: typeof row.branch_name === "string" ? row.branch_name : undefined,
+    prdItem: typeof row.prd_item === "string" ? row.prd_item : undefined,
+    status: row.status as CodingAutomationStatus,
+    codexSummary: typeof row.codex_summary === "string" ? row.codex_summary : undefined,
+    error: typeof row.error === "string" ? row.error : undefined,
+    approvedBy: typeof row.approved_by === "string" ? row.approved_by : undefined,
+    mergedAt: row.merged_at ? new Date(row.merged_at as string | Date) : undefined,
+    createdAt: new Date(row.created_at as string | Date),
+    updatedAt: new Date(row.updated_at as string | Date),
   };
 }
 

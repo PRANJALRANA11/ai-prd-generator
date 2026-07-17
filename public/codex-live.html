@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Live Codex | SDLC With AI</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="shortcut icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="page-shell codex-page-shell">
+      <header class="topbar" aria-label="Primary">
+        <a class="brand" href="/" aria-label="AI PRD Generator home">
+          <span class="brand-mark">&gt;_</span>
+          <span>sdlc0<span>.ai</span></span>
+        </a>
+        <nav class="nav-links" aria-label="Page">
+          <a href="/">Launch</a>
+          <a class="active" href="/codex-live">Live Codex</a>
+        </nav>
+      </header>
+
+      <main>
+        <section
+          class="codex-live-section codex-live-route"
+          id="codex-live"
+          aria-label="Live Codex coding session"
+        >
+          <div class="codex-live-board">
+            <aside class="codex-task-list" aria-label="Codex task list">
+              <div class="codex-panel-title">
+                <span>Queue</span>
+                <button class="clear-log-button" type="button" id="refresh-codex">
+                  Refresh
+                </button>
+              </div>
+              <div class="codex-task-items" id="codex-task-items">
+                <p class="codex-empty">No coding tasks yet.</p>
+              </div>
+            </aside>
+            <div class="codex-workbench">
+              <div class="codex-status-strip" id="codex-status-strip">
+                Waiting for Codex activity.
+              </div>
+              <div class="codex-work-grid">
+                <section class="codex-files-panel" aria-label="Changed files">
+                  <div class="codex-panel-title">
+                    <span>Files</span>
+                    <small id="codex-active-file">No file selected</small>
+                  </div>
+                  <div class="codex-file-list" id="codex-file-list"></div>
+                </section>
+                <section class="codex-editor-panel" aria-label="Live file preview">
+                  <div class="codex-panel-title">
+                    <span>Editor</span>
+                    <small id="codex-file-meta">Live preview</small>
+                  </div>
+                  <pre class="codex-code-view" id="codex-code-view">Select a Codex task to inspect live edits.</pre>
+                </section>
+              </div>
+              <div class="codex-bottom-grid">
+                <section class="codex-log-panel" aria-label="Codex logs">
+                  <div class="codex-panel-title">
+                    <span>Codex Output</span>
+                    <small id="codex-log-meta">Streaming after restart</small>
+                  </div>
+                  <pre id="codex-log-view">No Codex logs captured yet.</pre>
+                </section>
+                <section class="codex-diff-panel" aria-label="Git diff">
+                  <div class="codex-panel-title">
+                    <span>Diff</span>
+                    <small>Working tree</small>
+                  </div>
+                  <pre id="codex-diff-view">No diff yet.</pre>
+                </section>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
