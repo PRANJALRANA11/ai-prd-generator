@@ -40,6 +40,7 @@ app.get("/health", (_req, res) => {
 app.get("/api/config", (_req, res) => {
   res.json({
     slackWebhookConfigured: Boolean(config.slackWebhookUrl),
+    slackInviteUrl: config.slackInviteUrl,
     slashCommandPath: "/api/slack/prd",
     slackInteractionPath: "/api/slack/interactions",
     linearConfigured: Boolean(config.linearApiKey && config.linearTeamId),

@@ -2,11 +2,14 @@ const form = document.querySelector("#launch-form");
 const meetInput = document.querySelector("#meet-url");
 const webhookInput = document.querySelector("#slack-webhook");
 const statusBox = document.querySelector("#status-box");
-const configStatus = document.querySelector("#config-status");
 const testSlackButton = document.querySelector("#test-slack");
-const pasteMeetButton = document.querySelector("#paste-meet");
+const joinSlackLink = document.querySelector("#join-slack");
 const liveLogList = document.querySelector("#live-log-list");
 const clearLogButton = document.querySelector("#clear-log");
+const demoVideoDialog = document.querySelector("#demo-video-dialog");
+const openDemoVideoButton = document.querySelector("#open-demo-video");
+const closeDemoVideoButton = document.querySelector("#close-demo-video");
+const demoVideo = document.querySelector("#demo-video");
 
 let pollTimer;
 let logStream;
@@ -123,12 +126,13 @@ async function postJson(url, body) {
 async function loadConfig() {
   try {
     const response = await fetch("/api/config");
-    const config = await response.json();
-    configStatus.textContent = config.slackWebhookConfigured
-      ? "Default Slack webhook ready"
-      : "Paste a Slack webhook below";
+    const config = await response.json().catch(() => ({}));
+    if (response.ok && config.slackInviteUrl && joinSlackLink) {
+      joinSlackLink.href = config.slackInviteUrl;
+      joinSlackLink.classList.remove("hidden");
+    }
   } catch {
-    configStatus.textContent = "Backend not reachable";
+    setStatus("Backend not reachable", "error");
   }
 }
 
@@ -198,18 +202,40 @@ testSlackButton.addEventListener("click", async () => {
   }
 });
 
-pasteMeetButton.addEventListener("click", async () => {
-  try {
-    const text = await navigator.clipboard.readText();
-    if (text) meetInput.value = text.trim();
-    meetInput.focus();
-  } catch {
-    meetInput.focus();
-  }
-});
-
 clearLogButton.addEventListener("click", () => {
   clearLiveLogs("Live call log cleared.");
+});
+
+openDemoVideoButton?.addEventListener("click", () => {
+  if (demoVideoDialog?.showModal) {
+    demoVideoDialog.showModal();
+  } else {
+    demoVideoDialog?.setAttribute("open", "");
+  }
+  demoVideo?.play().catch(() => {
+    setStatus("Demo video is ready. Tap the video if your browser blocks autoplay.");
+  });
+});
+
+function closeDemoVideo() {
+  demoVideo?.pause();
+  if (demoVideo) demoVideo.currentTime = 0;
+  if (demoVideoDialog?.open) demoVideoDialog.close();
+}
+
+closeDemoVideoButton?.addEventListener("click", closeDemoVideo);
+
+demoVideoDialog?.addEventListener("click", (event) => {
+  if (event.target === demoVideoDialog) closeDemoVideo();
+});
+
+demoVideoDialog?.addEventListener("close", () => {
+  demoVideo?.pause();
+  if (demoVideo) demoVideo.currentTime = 0;
+});
+
+demoVideo?.addEventListener("loadedmetadata", () => {
+  demoVideo.closest(".video-dialog-shell")?.classList.add("has-video");
 });
 
 loadConfig();

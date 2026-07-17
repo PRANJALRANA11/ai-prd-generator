@@ -5,6 +5,7 @@ export interface AppConfig {
   deepgramApiKey: string;
   databaseUrl: string;
   slackWebhookUrl: string;
+  slackInviteUrl?: string;
   slackSlashCommandToken?: string;
   slackSigningSecret?: string;
   linearApiKey?: string;
@@ -32,6 +33,7 @@ export function loadConfig(): AppConfig {
     deepgramApiKey: requireEnv("DEEPGRAM_API_KEY"),
     databaseUrl: requireEnv("DATABASE_URL"),
     slackWebhookUrl: requireEnv("SLACK_WEBHOOK_URL"),
+    slackInviteUrl: process.env.SLACK_INVITE_URL,
     slackSlashCommandToken: process.env.SLACK_SLASH_COMMAND_TOKEN,
     slackSigningSecret: process.env.SLACK_SIGNING_SECRET,
     linearApiKey: process.env.LINEAR_API_KEY,

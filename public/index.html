@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>AI PRD Generator</title>
+    <title>SDLC With AI</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -11,99 +11,213 @@
       <header class="topbar" aria-label="Primary">
         <a class="brand" href="/" aria-label="AI PRD Generator home">
           <span class="brand-mark">&gt;_</span>
-          <span>prd0<span>.ai</span></span>
+          <span>sdlc0<span>.ai</span></span>
         </a>
         <nav class="nav-links" aria-label="Page">
           <a class="active" href="#launch">Launch</a>
+          <a href="#process">Process</a>
           <a href="#commands">Commands</a>
-          <a href="#history">History</a>
         </nav>
       </header>
 
       <main>
-        <section class="notice" aria-label="Product update">
-          <span class="live-dot" aria-hidden="true"></span>
-          <div>
-            <strong>Meet-to-PRD workflow is live.</strong>
-            <span>Join a Google Meet, transcribe with Deepgram, generate the PRD, then post it to Slack.</span>
-          </div>
-          <a href="#commands">View commands</a>
-        </section>
-
         <section class="hero" id="launch">
           <div class="hero-copy">
             <div class="yc-badge">
               <span>AI</span>
-              Built for product teams
+              Product ops control room
             </div>
-            <h1>Meetings become PRDs in <span class="strike">hours</span><span class="accent">minutes</span></h1>
+            <h1>
+              SDLC in <span class="cut-word">Hours</span> Minutes With Codex.
+            </h1>
             <p>
-              Add the bot to a meeting, choose the Slack channel, and let the transcript,
-              product brief, roadmap updates, and version history stay connected.
+              Drop the bot into Meet, ship the PRD to Slack, approve the
+              implementation plan, create clean Linear tickets for the team and
+              let codex solve them.
             </p>
-            <div class="trust-row" aria-label="Workflow">
-              <span>Google Meet</span>
-              <span>Deepgram</span>
-              <span>Gemini</span>
-              <span>Slack</span>
-            </div>
           </div>
 
           <form class="launch-panel" id="launch-form">
             <div class="panel-heading">
               <p>Launch bot</p>
-              <span id="config-status">Checking setup...</span>
             </div>
 
             <label for="meet-url">Meeting ID or Google Meet URL</label>
-            <div class="input-row">
+            <input
+              id="meet-url"
+              name="meetUrl"
+              type="text"
+              autocomplete="off"
+              placeholder="abc-defg-hij"
+              required
+            />
+
+            <button class="primary-button" type="submit">
+              Add bot to Meet
+            </button>
+
+            <a
+              class="join-slack-button hidden"
+              id="join-slack"
+              href="#"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Join my Slack
+            </a>
+
+            <label for="slack-webhook">Slack channel webhook</label>
+            <div class="webhook-row">
               <input
-                id="meet-url"
-                name="meetUrl"
-                type="text"
-                autocomplete="off"
-                placeholder="abc-defg-hij"
-                required
+                id="slack-webhook"
+                name="slackWebhookUrl"
+                type="url"
+                inputmode="url"
+                placeholder="Optional webhook URL"
               />
-              <button class="icon-button" type="button" id="paste-meet" title="Paste meeting link" aria-label="Paste meeting link">
-                <span aria-hidden="true">+</span>
+              <button class="secondary-button" type="button" id="test-slack">
+                Test Slack
               </button>
             </div>
 
-            <label for="slack-webhook">Slack channel webhook</label>
-            <input
-              id="slack-webhook"
-              name="slackWebhookUrl"
-              type="url"
-              inputmode="url"
-              placeholder="Uses configured webhook when blank"
-            />
-
-            <div class="actions">
-              <button class="primary-button" type="submit">Add bot to Meet</button>
-              <button class="secondary-button" type="button" id="test-slack">Test Slack</button>
-            </div>
-
-            <div class="status-box" id="status-box" role="status" aria-live="polite">
+            <div
+              class="status-box"
+              id="status-box"
+              role="status"
+              aria-live="polite"
+            >
               Ready for a meeting code.
             </div>
 
             <section class="live-log-panel" aria-label="Live call log">
               <div class="live-log-heading">
                 <span>Live call log</span>
-                <button class="clear-log-button" type="button" id="clear-log">Clear</button>
+                <button class="clear-log-button" type="button" id="clear-log">
+                  Clear
+                </button>
               </div>
               <ol class="live-log-list" id="live-log-list">
-                <li class="empty-log">Start a bot session to see live call events.</li>
+                <li class="empty-log">
+                  Start a bot session to see live call events.
+                </li>
               </ol>
             </section>
           </form>
+          <div class="video-launcher hero-video">
+            <video
+              class="video-thumbnail"
+              muted
+              playsinline
+              preload="metadata"
+              aria-hidden="true"
+              tabindex="-1"
+            >
+              <source src="/demo.mp4" type="video/mp4" />
+            </video>
+            <span class="demo-badge">Demo</span>
+            <button
+              class="video-play-button"
+              type="button"
+              id="open-demo-video"
+            >
+              <span class="play-icon" aria-hidden="true"></span>
+              <span class="sr-only">Play demo</span>
+            </button>
+          </div>
         </section>
 
-        <section class="command-strip" id="commands" aria-label="Slack command examples">
+        <dialog
+          class="video-dialog"
+          id="demo-video-dialog"
+          aria-label="Product demo video"
+        >
+          <div class="video-dialog-shell">
+            <button
+              class="video-close-button"
+              type="button"
+              id="close-demo-video"
+              aria-label="Close video"
+            >
+              X
+            </button>
+            <video
+              muted
+              loop
+              playsinline
+              controls
+              preload="metadata"
+              aria-label="AI PRD Generator workflow demo"
+              id="demo-video"
+            >
+              <source src="/demo.mp4" type="video/mp4" />
+            </video>
+            <div class="video-fallback">
+              <strong>Demo video slot</strong>
+              <span
+                >Add <code>public/demo.mp4</code> to play the recorded
+                walkthrough here.</span
+              >
+            </div>
+          </div>
+        </dialog>
+
+        <section
+          class="process-section"
+          id="process"
+          aria-label="Step by step process"
+        >
+          <div class="process-heading">
+            <span class="section-kicker">Process</span>
+            <h2>From call to shipped work.</h2>
+            <p>
+              The bot turns messy product conversations into an approved plan,
+              then hands the team a clean implementation queue.
+            </p>
+          </div>
+          <div class="process-grid">
+            <article class="process-card">
+              <span>01</span>
+              <h3>Join the call</h3>
+              <p>
+                Paste a Meet link and send the notetaker into the room with the
+                right Slack destination.
+              </p>
+            </article>
+            <article class="process-card">
+              <span>02</span>
+              <h3>Draft the PRD</h3>
+              <p>
+                Deepgram captures the discussion, then Gemini shapes the
+                transcript into a structured PRD.
+              </p>
+            </article>
+            <article class="process-card">
+              <span>03</span>
+              <h3>Approve tickets</h3>
+              <p>
+                Review the PRD in Slack, approve the plan, and create Linear
+                tickets from the agreed scope.
+              </p>
+            </article>
+            <article class="process-card">
+              <span>04</span>
+              <h3>Ship the work</h3>
+              <p>
+                Codex can pick up the Linear tasks, deliver the changes, and
+                close the loop.
+              </p>
+            </article>
+          </div>
+        </section>
+
+        <section
+          class="command-strip"
+          id="commands"
+          aria-label="Slack command examples"
+        >
           <div>
             <span class="section-kicker">Slack</span>
-            <h2>Useful commands, without digging through docs.</h2>
+            <h2>Commands that keep the PRD alive.</h2>
           </div>
           <div class="commands-grid">
             <code>/prd help</code>
@@ -115,6 +229,16 @@
           </div>
         </section>
       </main>
+
+      <footer class="footer" aria-label="Footer">
+        <div class="footer-brand">
+          <span class="brand-mark">&gt;_</span>
+          <div>
+            <strong>sdlc0.ai</strong>
+            <p>Meetings in. Features out.</p>
+          </div>
+        </div>
+      </footer>
     </div>
     <script src="/app.js" type="module"></script>
   </body>
