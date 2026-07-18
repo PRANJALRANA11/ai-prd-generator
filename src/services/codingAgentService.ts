@@ -58,6 +58,7 @@ export async function runCodingAgentTask(
   ], config.githubToken, config.githubRepo, config.githubUsername);
 
   await runGit(["checkout", "-b", branchName], taskDir);
+  await configureGitCommitIdentity(config, taskDir);
 
   const prompt = buildAgentPrompt(task);
   await writeFile(promptPath, prompt, "utf8");
@@ -166,6 +167,19 @@ async function runGit(args: string[], cwd?: string): Promise<string> {
   } catch (err) {
     throw sanitizeExecError(err);
   }
+}
+
+async function configureGitCommitIdentity(config: CodingAgentConfig, cwd: string): Promise<void> {
+  const authorName =
+    process.env.CODING_AGENT_GIT_NAME?.trim()
+    || config.githubUsername?.trim()
+    || "SDLC0 Codex Agent";
+  const authorEmail =
+    process.env.CODING_AGENT_GIT_EMAIL?.trim()
+    || "codex-agent@users.noreply.github.com";
+
+  await runGit(["config", "user.name", authorName], cwd);
+  await runGit(["config", "user.email", authorEmail], cwd);
 }
 
 async function runGitWithAuth(
