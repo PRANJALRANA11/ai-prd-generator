@@ -26,7 +26,7 @@ import {
   runCodingAgentTask,
   type CodingAgentConfig,
 } from "./services/codingAgentService.js";
-import { buildVersionHistoryText, postPRDToSlack, postSlackWebhook, type SlackWebhookPayload } from "./services/slackService.js";
+import { buildVersionHistoryText, postPRDToSlack, postSlackChatMessage, postSlackChatUpdate, postSlackWebhook, type SlackWebhookPayload } from "./services/slackService.js";
 import type { CodingAutomationRecord, LinearIssueRecord } from "./services/sessionStore.js";
 import { PostgresSessionStore } from "./services/sessionStore.js";
 import { appendSessionLog, getSessionLogs, subscribeToSessionLogs } from "./services/liveLogService.js";
@@ -42,6 +42,7 @@ const execFileAsync = promisify(execFile);
 // process-local. Durable session state is stored in PostgreSQL.
 const activeSessions = new Map<string, BotSession>();
 let codingAgentWorkerRunning = false;
+const processedSlackEventIds = new Set<string>();
 
 // ── Express app ───────────────────────────────────────────
 const app = express();
@@ -65,8 +66,11 @@ app.get("/api/config", (_req, res) => {
     slackWebhookConfigured: Boolean(config.slackWebhookUrl),
     publicBaseUrl: config.publicBaseUrl,
     slackInviteUrl: config.slackInviteUrl,
+    linearInviteUrl: config.linearInviteUrl,
     slashCommandPath: "/api/slack/prd",
     slackInteractionPath: "/api/slack/interactions",
+    slackEventsPath: "/api/slack/events",
+    slackBotTokenConfigured: Boolean(config.slackBotToken),
     linearConfigured: Boolean(config.linearApiKey && config.linearTeamId),
     githubAutomationConfigured: Boolean(config.githubToken && config.githubRepo),
     codingAgentEnabled: config.codingAgentEnabled,
@@ -313,6 +317,11 @@ app.get("/api/logs/:sessionId/stream", (req, res) => {
  *   /prd roadmap Q3: launch beta. Q4: add admin analytics.
  */
 async function handleSlackPRDRequest(req: Request, res: Response): Promise<void> {
+  if (isSlackEventPayload(req.body)) {
+    await handleSlackEventRequest(req, res);
+    return;
+  }
+
   const payload = req.body as {
     text?: string;
     token?: string;
@@ -407,10 +416,92 @@ app.post("/", (req, res) => {
   });
 });
 
+interface SlackEventRequest {
+  type?: string;
+  challenge?: string;
+  token?: string;
+  event_id?: string;
+  event?: {
+    type?: string;
+    user?: string;
+    text?: string;
+    channel?: string;
+    ts?: string;
+    thread_ts?: string;
+    bot_id?: string;
+  };
+}
+
+function isSlackEventPayload(payload: unknown): payload is SlackEventRequest {
+  if (!payload || typeof payload !== "object") return false;
+  const type = (payload as { type?: unknown }).type;
+  return type === "url_verification" || type === "event_callback";
+}
+
+async function handleSlackEventRequest(req: Request, res: Response): Promise<void> {
+  const payload = req.body as SlackEventRequest;
+
+  if (!verifyConfiguredSlackRequest(req, payload.token)) {
+    res.status(401).send("Unauthorized Slack event.");
+    return;
+  }
+
+  if (payload.type === "url_verification") {
+    res.status(200).json({ challenge: payload.challenge });
+    return;
+  }
+
+  if (payload.type !== "event_callback" || payload.event?.type !== "app_mention") {
+    res.status(200).json({ ok: true });
+    return;
+  }
+
+  if (payload.event_id && processedSlackEventIds.has(payload.event_id)) {
+    res.status(200).json({ ok: true });
+    return;
+  }
+  if (payload.event_id) {
+    processedSlackEventIds.add(payload.event_id);
+    setTimeout(() => processedSlackEventIds.delete(payload.event_id!), 10 * 60 * 1000).unref();
+  }
+
+  res.status(200).json({ ok: true });
+  handleSlackAppMention(payload).catch((err) => {
+    logger.error("SlackEvents", "Failed to handle app mention", {
+      eventId: payload.event_id,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  });
+}
+
+app.post("/api/slack/events", (req, res) => {
+  handleSlackEventRequest(req, res).catch((err) => {
+    logger.error("SlackEvents", "Failed before Slack event acknowledgement", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    if (!res.headersSent) {
+      res.status(200).json({ ok: true });
+    }
+  });
+});
+
 interface SlackInteractionPayload {
   type?: string;
   token?: string;
   response_url?: string;
+  channel?: {
+    id?: string;
+    name?: string;
+  };
+  container?: {
+    channel_id?: string;
+    message_ts?: string;
+    thread_ts?: string;
+  };
+  message?: {
+    ts?: string;
+    thread_ts?: string;
+  };
   user?: {
     id?: string;
     username?: string;
@@ -728,12 +819,103 @@ async function handleSlackPRDCommand(
   });
 }
 
+async function handleSlackAppMention(payload: SlackEventRequest): Promise<void> {
+  const event = payload.event;
+  if (!event?.channel || event.bot_id) return;
+
+  if (!config.slackBotToken) {
+    logger.warn("SlackEvents", "Cannot reply to app mention without SLACK_BOT_TOKEN", {
+      channel: event.channel,
+      eventId: payload.event_id,
+    });
+    return;
+  }
+
+  const text = event.text ?? "";
+  const wantsStatus = /status|state|progress|running|current|what'?s happening|where are we/i.test(text);
+  const message = wantsStatus
+    ? await buildBotStatusMessage()
+    : [
+        "I can report the current SDLC pipeline status.",
+        "Try mentioning me with `status`, `current status`, or `what is running?`.",
+      ].join("\n");
+
+  await postSlackChatMessage(config.slackBotToken, {
+    channel: event.channel,
+    thread_ts: event.thread_ts ?? event.ts,
+    text: message,
+  });
+}
+
+async function buildBotStatusMessage(): Promise<string> {
+  const latestSession = await sessionStore.getLatestPRDSession();
+  const tasks = await sessionStore.listRecentCodingAutomationTasks(12);
+  const latestIssues = latestSession ? await sessionStore.getLinearIssues(latestSession.id) : [];
+  const latestBatch = latestSession ? await sessionStore.getLinearIssueBatch(latestSession.id) : null;
+  const activeMeetSessions = Array.from(activeSessions.values())
+    .filter((session) => session.status !== "completed" && session.status !== "error")
+    .sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime());
+
+  const runningTasks = tasks.filter((task) => task.status === "codex_running");
+  const queuedTasks = tasks.filter((task) => ["pending_github_issue", "github_issue_created"].includes(task.status));
+  const reviewTasks = tasks.filter((task) => task.status === "pr_open");
+  const errorTasks = tasks.filter((task) => task.status === "error");
+
+  const lines = [
+    "*Current bot status*",
+    activeMeetSessions.length > 0
+      ? `*Meet bot:* ${activeMeetSessions.map(formatMeetSessionStatus).join("\n")}`
+      : "*Meet bot:* no active Meet session right now.",
+    latestSession
+      ? `*Latest PRD:* \`${latestSession.id}\` · ${latestSession.status} · ${latestSession.transcript.length} transcript segment${latestSession.transcript.length === 1 ? "" : "s"}`
+      : "*Latest PRD:* none yet.",
+    latestBatch
+      ? `*Linear:* ${latestBatch.status}${latestIssues.length ? ` · ${latestIssues.length} ticket${latestIssues.length === 1 ? "" : "s"}` : ""}`
+      : "*Linear:* no approved ticket batch for the latest PRD.",
+    formatTaskGroup("Codex running", runningTasks, 3),
+    formatTaskGroup("Queued for Codex", queuedTasks, 3),
+    formatTaskGroup("PRs ready for review", reviewTasks, 4),
+    errorTasks.length ? formatTaskGroup("Needs attention", errorTasks, 3) : undefined,
+    `*Live view:* ${buildCodexLiveUrl(latestSession ? { sessionId: latestSession.id } : {})}`,
+  ].filter(Boolean);
+
+  return lines.join("\n");
+}
+
+function formatMeetSessionStatus(session: BotSession): string {
+  const ageMin = Math.max(0, Math.round((Date.now() - session.startedAt.getTime()) / 60_000));
+  return `\`${session.id}\` · ${session.status} · ${ageMin}m · ${session.meetUrl}`;
+}
+
+function formatTaskGroup(label: string, tasks: CodingAutomationRecord[], limit: number): string {
+  if (tasks.length === 0) return `*${label}:* none.`;
+  const shown = tasks.slice(0, limit).map((task) => {
+    const id = task.linearIdentifier ?? "Task";
+    const pr = task.githubPrUrl ? ` · <${task.githubPrUrl}|PR #${task.githubPrNumber}>` : "";
+    const issue = !task.githubPrUrl && task.githubIssueUrl ? ` · <${task.githubIssueUrl}|issue #${task.githubIssueNumber}>` : "";
+    const error = task.error ? ` · ${truncateForSlack(task.error, 120)}` : "";
+    return `• ${id}: ${task.linearTitle}${pr}${issue}${error}`;
+  });
+  const more = tasks.length > limit ? `• +${tasks.length - limit} more` : undefined;
+  return [`*${label}:*`, ...shown, more].filter(Boolean).join("\n");
+}
+
+interface SlackThreadTarget {
+  channel: string;
+  threadTs: string;
+}
+
+interface SlackThreadMessage extends SlackThreadTarget {
+  ts: string;
+}
+
 async function handleLinearTicketApproval(
   sessionId: string,
   payload: SlackInteractionPayload,
 ): Promise<void> {
   const responseUrl = payload.response_url;
   const approvedBy = formatSlackUser(payload);
+  let loadingMessage: SlackThreadMessage | null = null;
 
   try {
     const session = activeSessions.get(sessionId) ?? await sessionStore.getSession(sessionId);
@@ -755,11 +937,11 @@ async function handleLinearTicketApproval(
 
     const existingIssues = await sessionStore.getLinearIssues(session.id);
     if (existingIssues.length > 0) {
-      await postSlackInteractionResponse(responseUrl, buildLinearIssueMessage(
+      await postLinearIssueReply(payload, responseUrl, buildLinearIssueMessage(
         session.id,
         existingIssues,
         "Linear tickets were already created for this PRD.",
-        "ephemeral",
+        "in_channel",
       ));
       return;
     }
@@ -777,6 +959,8 @@ async function handleLinearTicketApproval(
       approvedBy,
       approvedAt: new Date(),
     });
+
+    loadingMessage = await postLinearTicketLoadingReply(payload, responseUrl, session.id, approvedBy);
 
     logger.info("LinearApproval", "Generating Linear tickets from approved PRD", {
       sessionId: session.id,
@@ -806,7 +990,9 @@ async function handleLinearTicketApproval(
       approvedAt: new Date(),
     });
 
-    await postSlackInteractionResponse(responseUrl, buildLinearIssueMessage(
+    await updateLinearTicketLoadingReply(loadingMessage, `Created ${savedIssues.length} Linear ticket${savedIssues.length === 1 ? "" : "s"} for PRD session ${session.id}.`);
+
+    await postLinearIssueReply(payload, responseUrl, buildLinearIssueMessage(
       session.id,
       savedIssues,
       [
@@ -829,11 +1015,109 @@ async function handleLinearTicketApproval(
       await sessionStore.markLinearIssueBatch(sessionId, "error", { error: message });
     }
 
+    await updateLinearTicketLoadingReply(loadingMessage, `Linear ticket creation failed: ${message}`);
+
     await postSlackInteractionResponse(responseUrl, {
       response_type: "ephemeral",
       text: `Could not create Linear tickets: ${message}`,
     });
   }
+}
+
+async function postLinearTicketLoadingReply(
+  payload: SlackInteractionPayload,
+  responseUrl: string | undefined,
+  sessionId: string,
+  approvedBy: string | undefined,
+): Promise<SlackThreadMessage | null> {
+  const message = buildLinearTicketLoadingMessage(sessionId, approvedBy);
+  const posted = await postSlackThreadReply(payload, message);
+  if (posted) return posted;
+
+  await postSlackInteractionResponse(responseUrl, message);
+  return null;
+}
+
+async function updateLinearTicketLoadingReply(
+  message: SlackThreadMessage | null,
+  text: string,
+): Promise<void> {
+  if (!message || !config.slackBotToken) return;
+
+  try {
+    await postSlackChatUpdate(config.slackBotToken, {
+      channel: message.channel,
+      ts: message.ts,
+      text,
+      blocks: [
+        {
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text,
+          },
+        },
+      ],
+    });
+  } catch (err) {
+    logger.warn("SlackInteraction", "Could not update Linear ticket loading reply", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+async function postLinearIssueReply(
+  payload: SlackInteractionPayload,
+  responseUrl: string | undefined,
+  message: SlackWebhookPayload,
+): Promise<void> {
+  const posted = await postSlackThreadReply(payload, message);
+  if (posted) return;
+
+  await postSlackInteractionResponse(responseUrl, message);
+}
+
+async function postSlackThreadReply(
+  payload: SlackInteractionPayload,
+  message: SlackWebhookPayload,
+): Promise<SlackThreadMessage | null> {
+  const target = getSlackInteractionThreadTarget(payload);
+  if (!target || !config.slackBotToken) return null;
+
+  try {
+    const result = await postSlackChatMessage(config.slackBotToken, {
+      channel: target.channel,
+      thread_ts: target.threadTs,
+      text: message.text,
+      blocks: message.blocks,
+    });
+
+    if (!result.ts) return null;
+
+    return {
+      channel: result.channel ?? target.channel,
+      threadTs: target.threadTs,
+      ts: result.ts,
+    };
+  } catch (err) {
+    logger.warn("SlackInteraction", "Could not post threaded Slack reply; falling back to response_url", {
+      error: err instanceof Error ? err.message : String(err),
+      channel: target.channel,
+      threadTs: target.threadTs,
+    });
+    return null;
+  }
+}
+
+function getSlackInteractionThreadTarget(payload: SlackInteractionPayload): SlackThreadTarget | null {
+  const channel = payload.channel?.id ?? payload.container?.channel_id;
+  const threadTs = payload.container?.thread_ts
+    ?? payload.message?.thread_ts
+    ?? payload.container?.message_ts
+    ?? payload.message?.ts;
+
+  if (!channel || !threadTs) return null;
+  return { channel, threadTs };
 }
 
 async function createCodingAutomationTasksForIssues(
@@ -1560,6 +1844,47 @@ function buildLinearIssueMessage(
   };
 }
 
+function buildLinearTicketLoadingMessage(
+  sessionId: string,
+  approvedBy: string | undefined,
+): SlackWebhookPayload {
+  const leadText = [
+    approvedBy ? `${approvedBy} approved the PRD.` : "The PRD was approved.",
+    "Creating Linear tickets now. I will reply here when they are ready.",
+  ].join(" ");
+
+  return {
+    response_type: "in_channel",
+    text: `Creating Linear tickets for PRD session ${sessionId}...`,
+    blocks: [
+      {
+        type: "header",
+        text: {
+          type: "plain_text",
+          text: "Creating Linear Tickets",
+          emoji: true,
+        },
+      },
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `*PRD session:* \`${sessionId}\`\n${leadText}`,
+        },
+      },
+      {
+        type: "context",
+        elements: [
+          {
+            type: "mrkdwn",
+            text: "Generating implementation-ready tickets from the approved PRD.",
+          },
+        ],
+      },
+    ],
+  };
+}
+
 async function postSlackInteractionResponse(
   responseUrl: string | undefined,
   payload: SlackWebhookPayload,
@@ -1708,6 +2033,7 @@ async function startServer(): Promise<void> {
     logger.info("Server", "  POST /api/stop-bot    — Stop a running bot session");
     logger.info("Server", "  POST /api/slack/prd   — Slack PRD Q&A and roadmap updates");
     logger.info("Server", "  POST /api/slack/interactions — Slack approval callbacks");
+    logger.info("Server", "  POST /api/slack/events — Slack mention status callbacks");
     logger.info("Server", "  GET  /api/status/:id  — Check bot session status");
     logger.info("Server", "  GET  /health          — Health check");
   });

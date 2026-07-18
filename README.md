@@ -65,7 +65,7 @@ npm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000) to add the bot to a Meet
-call and choose the Slack channel webhook for that session.
+call.
 
 ### 5. Start the bot from the API
 
@@ -84,6 +84,7 @@ curl -X POST http://localhost:3000/api/start-bot \
 | POST   | `/api/stop-bot`        | Stop a running bot session     |
 | POST   | `/api/slack/prd`       | Slack slash command for PRD Q&A and roadmap updates |
 | POST   | `/api/slack/interactions` | Slack approval button callbacks for Linear ticket creation |
+| POST   | `/api/slack/events`    | Slack app mention events for current bot status |
 | GET    | `/api/config`          | Frontend config and setup status |
 | GET    | `/api/coding/tasks`    | Recent Codex automation tasks |
 | GET    | `/api/coding/tasks/:id` | Live Codex task snapshot |
@@ -162,6 +163,36 @@ Additional Slack workflow features:
 - `show vN` reposts a specific PRD version in the formatted Slack layout.
 - `diff vA vB` summarizes product, scope, roadmap, and risk changes between two versions.
 - Each posted PRD includes an approval button. When approved, the app turns the PRD into coding-agent-ready Linear tickets and posts the ticket links back to Slack.
+- Mention the bot with `status`, `current status`, or `what is running?` to get the latest Meet, PRD, Linear, GitHub, and Codex status in a thread.
+
+### Slack Bot Mentions
+
+To let users tag the bot in Slack and ask for status, configure the Slack app
+with:
+
+```text
+SLACK_BOT_TOKEN=xoxb-...
+SLACK_SIGNING_SECRET=...
+```
+
+The bot token needs these OAuth scopes:
+
+```text
+app_mentions:read
+chat:write
+```
+
+In Slack **Event Subscriptions**, set the Request URL to:
+
+```text
+https://your-public-server.example.com/api/slack/events
+```
+
+Subscribe to the bot event:
+
+```text
+app_mention
+```
 
 ### Slack Linear Approval Setup
 
@@ -290,6 +321,7 @@ DATABASE_URL=...
 SLACK_WEBHOOK_URL=...
 PUBLIC_BASE_URL=https://your-render-service.onrender.com
 SLACK_SIGNING_SECRET=...
+SLACK_BOT_TOKEN=...
 LINEAR_API_KEY=...
 LINEAR_TEAM_ID=...
 BOT_DISPLAY_NAME=AI Notetaker
@@ -302,6 +334,7 @@ Optional:
 ```text
 SLACK_SLASH_COMMAND_TOKEN=...
 SLACK_INVITE_URL=...
+LINEAR_INVITE_URL=...
 LINEAR_PROJECT_ID=...
 LINEAR_ASSIGNEE_ID=...
 LINEAR_LABEL_IDS=label_uuid_one,label_uuid_two
@@ -341,6 +374,12 @@ Use this URL for Slack Interactivity & Shortcuts:
 
 ```text
 https://your-render-service.onrender.com/api/slack/interactions
+```
+
+Use this URL for Slack Event Subscriptions:
+
+```text
+https://your-render-service.onrender.com/api/slack/events
 ```
 
 ## Tech Stack

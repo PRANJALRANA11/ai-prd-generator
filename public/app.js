@@ -1,9 +1,7 @@
 const form = document.querySelector("#launch-form");
 const meetInput = document.querySelector("#meet-url");
-const webhookInput = document.querySelector("#slack-webhook");
-const statusBox = document.querySelector("#status-box");
-const testSlackButton = document.querySelector("#test-slack");
 const joinSlackLink = document.querySelector("#join-slack");
+const joinLinearLink = document.querySelector("#join-linear");
 const liveLogList = document.querySelector("#live-log-list");
 const clearLogButton = document.querySelector("#clear-log");
 const demoVideoDialog = document.querySelector("#demo-video-dialog");
@@ -30,9 +28,11 @@ let selectedCodexTaskId = codexParams.get("task") || undefined;
 let selectedCodexFilePath;
 
 function setStatus(message, tone = "info") {
-  if (!statusBox) return;
-  statusBox.textContent = message;
-  statusBox.classList.toggle("error", tone === "error");
+  appendLiveLog({
+    timestamp: new Date().toISOString(),
+    level: tone === "error" ? "error" : "info",
+    message,
+  });
 }
 
 function setBusy(isBusy) {
@@ -149,6 +149,10 @@ async function loadConfig() {
       joinSlackLink.href = config.slackInviteUrl;
       joinSlackLink.classList.remove("hidden");
     }
+    if (response.ok && config.linearInviteUrl && joinLinearLink) {
+      joinLinearLink.href = config.linearInviteUrl;
+      joinLinearLink.classList.remove("hidden");
+    }
   } catch {
     setStatus("Backend not reachable", "error");
   }
@@ -157,7 +161,6 @@ async function loadConfig() {
 function buildPayload() {
   return {
     meetUrl: meetInput?.value.trim(),
-    slackWebhookUrl: webhookInput?.value.trim() || undefined,
   };
 }
 
@@ -202,21 +205,6 @@ form?.addEventListener("submit", async (event) => {
   } catch (error) {
     setBusy(false);
     setStatus(error.message, "error");
-  }
-});
-
-testSlackButton?.addEventListener("click", async () => {
-  testSlackButton.disabled = true;
-  setStatus("Sending Slack test message...");
-  try {
-    await postJson("/api/slack/test", {
-      slackWebhookUrl: webhookInput.value.trim() || undefined,
-    });
-    setStatus("Slack test posted. Check the selected channel.");
-  } catch (error) {
-    setStatus(error.message, "error");
-  } finally {
-    testSlackButton.disabled = false;
   }
 });
 

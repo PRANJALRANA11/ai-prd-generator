@@ -335,6 +335,7 @@ h1 {
 .launch-panel {
   display: grid;
   gap: 14px;
+  margin-top: 68px;
   padding: 22px;
   border: 4px solid var(--line);
 
@@ -390,16 +391,7 @@ textarea:focus {
   box-shadow: 6px 6px 0 var(--pink);
 }
 
-.webhook-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: stretch;
-}
-
-.primary-button,
-.secondary-button,
-.join-slack-button,
+.cta-button,
 .clear-log-button {
   border: 3px solid var(--line);
   border-radius: 0;
@@ -409,11 +401,13 @@ textarea:focus {
   box-shadow: var(--shadow-small);
 }
 
-.primary-button,
-.secondary-button,
-.join-slack-button {
+.cta-button {
+  display: inline-grid;
+  place-items: center;
   min-height: 54px;
   padding: 0 18px;
+  text-align: center;
+  text-decoration: none;
 }
 
 .primary-button {
@@ -424,40 +418,45 @@ textarea:focus {
   background: var(--blue);
 }
 
-.join-slack-button {
+.invite-row {
   display: grid;
-  place-items: center;
-  background: var(--green);
-  text-align: center;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
 }
 
-button:hover {
+.invite-row:empty {
+  display: none;
+}
+
+.join-invite-button {
+  width: 100%;
+}
+
+.join-slack-button {
+  background: var(--green);
+}
+
+.join-linear-button {
+  background: var(--yellow);
+}
+
+button:hover,
+.cta-button:hover {
   transform: translate(2px, 2px);
   box-shadow: 2px 2px 0 var(--line);
 }
 
-button:disabled {
+button:disabled,
+.cta-button[aria-disabled="true"] {
   cursor: wait;
   opacity: 0.58;
   transform: none;
 }
 
-.status-box {
-  min-height: 76px;
-  padding: 14px;
-  border: 3px solid var(--line);
-  color: var(--ink);
-  background: var(--green);
-  box-shadow: var(--shadow-small);
-  font-size: 14px;
-  font-weight: 800;
-  line-height: 1.45;
-  white-space: pre-line;
-}
-
-.status-box.error {
-  color: var(--ink);
-  background: var(--red);
+.cta-button:focus-visible,
+button:focus-visible {
+  outline: 4px solid var(--pink);
+  outline-offset: 3px;
 }
 
 .live-log-panel {
@@ -555,10 +554,13 @@ button:disabled {
   grid-template-columns: 0.36fr 1fr;
   gap: 24px;
   margin-top: 46px;
-  padding: 22px;
-  border: 3px solid var(--line);
-  background: var(--paper);
-  box-shadow: 6px 6px 0 var(--line);
+  padding: 26px;
+  border: 4px solid var(--line);
+  background:
+    linear-gradient(90deg, rgba(17, 17, 17, 0.07) 1px, transparent 1px),
+    linear-gradient(rgba(17, 17, 17, 0.07) 1px, transparent 1px), var(--paper);
+  background-size: 28px 28px;
+  box-shadow: 9px 9px 0 var(--line);
 }
 
 .embedded-video {
@@ -695,7 +697,8 @@ button:disabled {
 .process-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 34px;
+  gap: 32px;
+  align-items: stretch;
 }
 
 .process-card {
@@ -703,39 +706,12 @@ button:disabled {
   display: grid;
   align-content: start;
   gap: 10px;
-  min-height: 188px;
+  min-height: 204px;
   margin: 0;
-  padding: 16px;
-  border: 3px solid var(--line);
+  padding: 18px;
+  border: 4px solid var(--line);
   background: #ffffff;
-  box-shadow: 3px 3px 0 var(--line);
-}
-
-.process-card:not(:last-child)::after {
-  content: "";
-  position: absolute;
-  top: 42%;
-  right: -30px;
-  z-index: 2;
-  width: 38px;
-  height: 26px;
-  border-top: 5px solid var(--red);
-  border-right: 5px solid var(--red);
-  border-radius: 0 22px 0 0;
-  transform: rotate(12deg);
-}
-
-.process-card:not(:last-child)::before {
-  content: "";
-  position: absolute;
-  top: calc(42% + 18px);
-  right: -33px;
-  z-index: 2;
-  width: 13px;
-  height: 13px;
-  border-right: 5px solid var(--red);
-  border-bottom: 5px solid var(--red);
-  transform: rotate(-35deg);
+  box-shadow: 5px 5px 0 var(--line);
 }
 
 .process-card:nth-child(1) {
@@ -767,7 +743,7 @@ button:disabled {
 
 .process-card h3 {
   margin: 0;
-  font-size: 22px;
+  font-size: 24px;
   line-height: 1;
   font-weight: 1000;
 }
@@ -778,6 +754,53 @@ button:disabled {
   font-size: 13px;
   font-weight: 800;
   line-height: 1.35;
+}
+
+.tracking-section {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 34px;
+}
+
+.tracking-card {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-height: 190px;
+  padding: 18px;
+  border: 4px solid var(--line);
+  box-shadow: 7px 7px 0 var(--line);
+}
+
+.mention-card {
+  background: var(--blue);
+}
+
+.codex-card {
+  background: var(--green);
+}
+
+.tracking-card h2 {
+  max-width: 520px;
+  font-size: clamp(24px, 2.4vw, 34px);
+}
+
+.tracking-card p {
+  max-width: 560px;
+  margin: 0;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 850;
+  line-height: 1.38;
+}
+
+.tracking-link {
+  width: fit-content;
+  min-height: 56px;
+  margin-top: 8px;
+  border: 4px solid var(--line);
+  background: var(--yellow);
 }
 
 .codex-live-section {
@@ -806,8 +829,7 @@ button:disabled {
   padding: 14px;
   background:
     linear-gradient(#f7f1df 31px, transparent 32px),
-    linear-gradient(90deg, #f7f1df 31px, transparent 32px),
-    var(--paper);
+    linear-gradient(90deg, #f7f1df 31px, transparent 32px), var(--paper);
   background-size: 32px 32px;
   overflow: hidden;
 }
@@ -1115,7 +1137,12 @@ button:disabled {
   font-weight: 1000;
   text-transform: uppercase;
 }
-
+#mentions-kicker {
+  width: 100px;
+}
+#live-kicker {
+  width: 122px;
+}
 h2 {
   margin: 0;
   max-width: 430px;
@@ -1128,7 +1155,47 @@ h2 {
 .commands-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.command-card {
+  display: grid;
   gap: 8px;
+  padding: 12px;
+  border: 4px solid var(--line);
+  background: #ffffff;
+  box-shadow: var(--shadow-small);
+}
+
+.command-card:nth-child(3n + 1) {
+  background: var(--yellow);
+}
+
+.command-card:nth-child(3n + 2) {
+  background: var(--blue);
+}
+
+.command-card:nth-child(3n) {
+  background: var(--green);
+}
+
+.command-card span {
+  display: inline-flex;
+  width: fit-content;
+  padding: 5px 8px;
+  border: 3px solid var(--line);
+  background: #ffffff;
+  font-size: 12px;
+  font-weight: 1000;
+  text-transform: uppercase;
+}
+
+.command-card p {
+  margin: 0;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 850;
+  line-height: 1.35;
 }
 
 code {
@@ -1145,15 +1212,15 @@ code {
 }
 
 code:nth-child(3n + 1) {
-  background: var(--yellow);
+  background: var(--paper);
 }
 
 code:nth-child(3n + 2) {
-  background: var(--blue);
+  background: var(--paper);
 }
 
 code:nth-child(3n) {
-  background: var(--green);
+  background: var(--paper);
 }
 
 .footer {
@@ -1225,6 +1292,7 @@ code:nth-child(3n) {
   .hero,
   .codex-live-heading,
   .codex-live-board,
+  .tracking-section,
   .process-section,
   .command-strip {
     grid-template-columns: 1fr;
@@ -1287,7 +1355,7 @@ code:nth-child(3n) {
 
   .nav-links {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(2, 1fr);
     gap: 4px;
   }
 
@@ -1306,8 +1374,8 @@ code:nth-child(3n) {
     font-size: 17px;
   }
 
-  .webhook-row,
   .commands-grid,
+  .tracking-section,
   .process-grid,
   .video-notes {
     grid-template-columns: 1fr;
@@ -1319,6 +1387,7 @@ code:nth-child(3n) {
 
   .launch-panel,
   .codex-live-section,
+  .tracking-card,
   .process-section,
   .command-strip {
     padding: 16px;

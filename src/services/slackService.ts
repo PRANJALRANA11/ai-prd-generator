@@ -66,6 +66,64 @@ export async function postSlackWebhook(
   }
 }
 
+export async function postSlackChatMessage(
+  botToken: string,
+  payload: {
+    channel: string;
+    text: string;
+    thread_ts?: string;
+    blocks?: Array<Record<string, unknown>>;
+  },
+): Promise<{ channel?: string; ts?: string }> {
+  const response = await fetch("https://slack.com/api/chat.postMessage", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${botToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const body = await response.json().catch(() => undefined) as {
+    ok?: boolean;
+    error?: string;
+    channel?: string;
+    ts?: string;
+  } | undefined;
+  if (!response.ok || !body?.ok) {
+    throw new Error(`Slack chat.postMessage failed (${response.status}): ${body?.error ?? response.statusText}`);
+  }
+
+  return {
+    channel: body.channel,
+    ts: body.ts,
+  };
+}
+
+export async function postSlackChatUpdate(
+  botToken: string,
+  payload: {
+    channel: string;
+    ts: string;
+    text: string;
+    blocks?: Array<Record<string, unknown>>;
+  },
+): Promise<void> {
+  const response = await fetch("https://slack.com/api/chat.update", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${botToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const body = await response.json().catch(() => undefined) as { ok?: boolean; error?: string } | undefined;
+  if (!response.ok || !body?.ok) {
+    throw new Error(`Slack chat.update failed (${response.status}): ${body?.error ?? response.statusText}`);
+  }
+}
+
 export function buildVersionHistoryText(
   versions: Array<{
     version: number;

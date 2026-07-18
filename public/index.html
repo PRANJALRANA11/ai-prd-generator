@@ -18,6 +18,7 @@
         <nav class="nav-links" aria-label="Page">
           <a class="active" href="#launch">Launch</a>
           <a href="#process">Process</a>
+          <a href="#tracking">Track</a>
           <a href="/codex-live">Codex</a>
           <a href="#commands">Commands</a>
         </nav>
@@ -55,41 +56,29 @@
               required
             />
 
-            <button class="primary-button" type="submit">
+            <button class="cta-button primary-button" type="submit">
               Add bot to Meet
             </button>
 
-            <a
-              class="join-slack-button hidden"
-              id="join-slack"
-              href="#"
-              target="_blank"
-              rel="noreferrer"
-            >
-              Join my Slack
-            </a>
-
-            <label for="slack-webhook">Slack channel webhook</label>
-            <div class="webhook-row">
-              <input
-                id="slack-webhook"
-                name="slackWebhookUrl"
-                type="url"
-                inputmode="url"
-                placeholder="Optional webhook URL"
-              />
-              <button class="secondary-button" type="button" id="test-slack">
-                Test Slack
-              </button>
-            </div>
-
-            <div
-              class="status-box"
-              id="status-box"
-              role="status"
-              aria-live="polite"
-            >
-              Ready for a meeting code.
+            <div class="invite-row">
+              <a
+                class="cta-button join-invite-button join-slack-button hidden"
+                id="join-slack"
+                href="#"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Join my Slack
+              </a>
+              <a
+                class="cta-button join-invite-button join-linear-button hidden"
+                id="join-linear"
+                href="#"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Join my Linear
+              </a>
             </div>
 
             <section class="live-log-panel" aria-label="Live call log">
@@ -115,7 +104,10 @@
               aria-hidden="true"
               tabindex="-1"
             >
-              <source src="/demo.mp4" type="video/mp4" />
+              <source
+                src="https://1fdfqyad2nxrq4jx.public.blob.vercel-storage.com/output.mp4"
+                type="video/mp4"
+              />
             </video>
             <span class="demo-badge">Demo</span>
             <button
@@ -152,7 +144,10 @@
               aria-label="AI PRD Generator workflow demo"
               id="demo-video"
             >
-              <source src="/demo.mp4" type="video/mp4" />
+              <source
+                src="https://1fdfqyad2nxrq4jx.public.blob.vercel-storage.com/output.mp4"
+                type="video/mp4"
+              />
             </video>
             <div class="video-fallback">
               <strong>Demo video slot</strong>
@@ -214,6 +209,38 @@
         </section>
 
         <section
+          class="tracking-section"
+          id="tracking"
+          aria-label="Pipeline tracking"
+        >
+          <article class="tracking-card mention-card">
+            <span class="section-kicker" id="mentions-kicker">Mentions</span>
+            <h2>Ask Slack where the bot is.</h2>
+            <p>
+              Tag the bot with a status question and get the current Meet, PRD,
+              Linear, GitHub, and Codex state back in the same Slack thread.
+            </p>
+            <a
+              class="cta-button tracking-link"
+              href="https://join.slack.com/t/lexilayer/shared_invite/zt-4476ln1e9-HC2d46sllP8kGmTZ5xEq3Q"
+            >
+              Join my Slack
+            </a>
+          </article>
+          <article class="tracking-card codex-card">
+            <span class="section-kicker" id="live-kicker">Live Session</span>
+            <h2>Track every ticket with Codex.</h2>
+            <p>
+              Open the Live Codex route to inspect the active session, queued
+              tickets, changed files, logs, diffs, linked PRs, and review state.
+            </p>
+            <a class="cta-button tracking-link" href="/codex-live">
+              Open Live Codex
+            </a>
+          </article>
+        </section>
+
+        <section
           class="command-strip"
           id="commands"
           aria-label="Slack command examples"
@@ -223,12 +250,36 @@
             <h2>Commands that keep the PRD alive.</h2>
           </div>
           <div class="commands-grid">
-            <code>/prd help</code>
-            <code>/prd history</code>
-            <code>/prd show v2</code>
-            <code>/prd diff v1 v2</code>
-            <code>/prd roadmap Q3 beta, Q4 launch</code>
-            <code>/prd What changed in scope?</code>
+            <article class="command-card">
+              <span>Help</span>
+              <p>See every PRD and tracking command.</p>
+              <code>/prd help</code>
+            </article>
+            <article class="command-card">
+              <span>Versions</span>
+              <p>List the saved PRD version history.</p>
+              <code>/prd history</code>
+            </article>
+            <article class="command-card">
+              <span>Snapshot</span>
+              <p>Repost a specific PRD version.</p>
+              <code>/prd show v2</code>
+            </article>
+            <article class="command-card">
+              <span>Compare</span>
+              <p>Summarize what changed between versions.</p>
+              <code>/prd diff v1 v2</code>
+            </article>
+            <article class="command-card">
+              <span>Roadmap</span>
+              <p>Update the PRD from roadmap notes.</p>
+              <code>/prd roadmap Q3 beta, Q4 launch</code>
+            </article>
+            <article class="command-card">
+              <span>Ask</span>
+              <p>Ask questions against the latest PRD.</p>
+              <code>/prd What changed in scope?</code>
+            </article>
           </div>
         </section>
       </main>

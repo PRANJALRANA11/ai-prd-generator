@@ -9,6 +9,8 @@ export interface AppConfig {
   slackInviteUrl?: string;
   slackSlashCommandToken?: string;
   slackSigningSecret?: string;
+  slackBotToken?: string;
+  linearInviteUrl?: string;
   linearApiKey?: string;
   linearTeamId?: string;
   linearProjectId?: string;
@@ -49,6 +51,8 @@ export function loadConfig(): AppConfig {
     slackInviteUrl: process.env.SLACK_INVITE_URL,
     slackSlashCommandToken: process.env.SLACK_SLASH_COMMAND_TOKEN,
     slackSigningSecret: process.env.SLACK_SIGNING_SECRET,
+    slackBotToken: process.env.SLACK_BOT_TOKEN,
+    linearInviteUrl: process.env.LINEAR_INVITE_URL,
     linearApiKey: process.env.LINEAR_API_KEY,
     linearTeamId: process.env.LINEAR_TEAM_ID,
     linearProjectId: process.env.LINEAR_PROJECT_ID,

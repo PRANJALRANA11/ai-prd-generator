@@ -32,6 +32,10 @@ services:
         sync: false
       - key: SLACK_SIGNING_SECRET
         sync: false
+      - key: SLACK_BOT_TOKEN
+        sync: false
+      - key: LINEAR_INVITE_URL
+        sync: false
       - key: LINEAR_API_KEY
         sync: false
       - key: LINEAR_TEAM_ID
