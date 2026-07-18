@@ -1,12 +1,33 @@
 import express, { type Request, type Response } from "express";
 import { v4 as uuidv4 } from "uuid";
 import path from "path";
+import crypto from "crypto";
+import { execFile } from "child_process";
+import { promisify } from "util";
+import { readFile, readdir, stat } from "fs/promises";
 import { fileURLToPath } from "url";
+import type { IncomingMessage, ServerResponse } from "http";
 import { loadConfig } from "./config.js";
 import { logger } from "./utils/logger.js";
 import { startMeetBot, requestStop, type BotSession } from "./services/meetBot.js";
-import { answerPRDQuestion, comparePRDVersions, generatePRD, updatePRDWithRoadmap } from "./services/llmService.js";
-import { buildVersionHistoryText, postPRDToSlack, postSlackWebhook } from "./services/slackService.js";
+import { answerPRDQuestion, comparePRDVersions, generateLinearTicketSpecs, generatePRD, updatePRDWithRoadmap } from "./services/llmService.js";
+import { closeLinearIssue, createLinearIssues, type LinearIssue } from "./services/linearService.js";
+import {
+  closeGitHubIssue,
+  createGitHubIssue,
+  createGitHubIssueComment,
+  createGitHubPullRequest,
+  getGitHubPullRequest,
+  mergeGitHubPullRequest,
+  parseGitHubRepo,
+  type GitHubConfig,
+} from "./services/githubService.js";
+import {
+  runCodingAgentTask,
+  type CodingAgentConfig,
+} from "./services/codingAgentService.js";
+import { buildVersionHistoryText, postPRDToSlack, postSlackChatMessage, postSlackChatUpdate, postSlackWebhook, type SlackWebhookPayload } from "./services/slackService.js";
+import type { CodingAutomationRecord, LinearIssueRecord } from "./services/sessionStore.js";
 import { PostgresSessionStore } from "./services/sessionStore.js";
 import { appendSessionLog, getSessionLogs, subscribeToSessionLogs } from "./services/liveLogService.js";
 
@@ -15,18 +36,25 @@ const config = loadConfig();
 
 // ── Stateful session store ────────────────────────────────
 const sessionStore = new PostgresSessionStore(config.databaseUrl);
+const execFileAsync = promisify(execFile);
 
 // Active browser sessions must stay in memory because Browser/Page handles are
 // process-local. Durable session state is stored in PostgreSQL.
 const activeSessions = new Map<string, BotSession>();
+let codingAgentWorkerRunning = false;
+const processedSlackEventIds = new Set<string>();
 
 // ── Express app ───────────────────────────────────────────
 const app = express();
-app.use(express.json());
-app.use(express.urlencoded({ extended: false }));
+app.use(express.json({ verify: captureRawBody }));
+app.use(express.urlencoded({ extended: false, verify: captureRawBody }));
 
 const publicDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "public");
 app.use(express.static(publicDir));
+
+app.get("/codex-live", (_req, res) => {
+  res.sendFile(path.join(publicDir, "codex-live.html"));
+});
 
 // ── Health check ──────────────────────────────────────────
 app.get("/health", (_req, res) => {
@@ -36,7 +64,16 @@ app.get("/health", (_req, res) => {
 app.get("/api/config", (_req, res) => {
   res.json({
     slackWebhookConfigured: Boolean(config.slackWebhookUrl),
+    publicBaseUrl: config.publicBaseUrl,
+    slackInviteUrl: config.slackInviteUrl,
+    linearInviteUrl: config.linearInviteUrl,
     slashCommandPath: "/api/slack/prd",
+    slackInteractionPath: "/api/slack/interactions",
+    slackEventsPath: "/api/slack/events",
+    slackBotTokenConfigured: Boolean(config.slackBotToken),
+    linearConfigured: Boolean(config.linearApiKey && config.linearTeamId),
+    githubAutomationConfigured: Boolean(config.githubToken && config.githubRepo),
+    codingAgentEnabled: config.codingAgentEnabled,
   });
 });
 
@@ -50,6 +87,72 @@ app.post("/api/slack/test", async (req, res) => {
   });
 
   res.json({ ok: true });
+});
+
+app.get("/api/coding/tasks", async (_req, res) => {
+  const tasks = await sessionStore.listRecentCodingAutomationTasks(30);
+  res.json({
+    enabled: config.codingAgentEnabled,
+    defaultRepo: config.githubRepo,
+    workdir: config.codingAgentWorkdir,
+    tasks: tasks.map(publicCodingTask),
+  });
+});
+
+app.get("/api/coding/tasks/:id", async (req, res) => {
+  const task = await sessionStore.getCodingAutomationTask(req.params.id);
+  if (!task) {
+    res.status(404).json({ error: "Coding task not found." });
+    return;
+  }
+
+  const snapshot = await buildCodingTaskSnapshot(task);
+  res.json(snapshot);
+});
+
+app.get("/api/coding/tasks/:id/file", async (req, res) => {
+  const task = await sessionStore.getCodingAutomationTask(req.params.id);
+  if (!task) {
+    res.status(404).json({ error: "Coding task not found." });
+    return;
+  }
+
+  const requestedPath = typeof req.query.path === "string" ? req.query.path : "";
+  const taskDir = getCodingTaskDir(task.id);
+  const filePath = safeJoinInside(taskDir, requestedPath);
+  if (!filePath) {
+    res.status(400).json({ error: "Invalid file path." });
+    return;
+  }
+
+  try {
+    const fileStat = await stat(filePath);
+    if (!fileStat.isFile()) {
+      res.status(400).json({ error: "Path is not a file." });
+      return;
+    }
+    if (fileStat.size > 300_000) {
+      res.status(413).json({ error: "File is too large for live preview." });
+      return;
+    }
+
+    const buffer = await readFile(filePath);
+    if (buffer.includes(0)) {
+      res.status(415).json({ error: "Binary file preview is not supported." });
+      return;
+    }
+
+    res.json({
+      path: requestedPath,
+      content: buffer.toString("utf8"),
+      size: fileStat.size,
+      updatedAt: fileStat.mtime.toISOString(),
+    });
+  } catch (err) {
+    res.status(404).json({
+      error: err instanceof Error ? err.message : "File not found.",
+    });
+  }
 });
 
 /**
@@ -89,7 +192,10 @@ app.post("/api/start-bot", async (req, res) => {
 
   activeSessions.set(sessionId, session);
 
-  logger.info("Server", "Starting bot session", { sessionId, meetUrl: normalizedMeetUrl });
+  logger.info("Server", "Starting bot session", {
+    sessionId,
+    meetUrl: normalizedMeetUrl,
+  });
   appendSessionLog(sessionId, "info", "Bot launch requested", {
     meetUrl: normalizedMeetUrl,
     mode: "notetaker",
@@ -214,6 +320,11 @@ app.get("/api/logs/:sessionId/stream", (req, res) => {
  *   /prd roadmap Q3: launch beta. Q4: add admin analytics.
  */
 async function handleSlackPRDRequest(req: Request, res: Response): Promise<void> {
+  if (isSlackEventPayload(req.body)) {
+    await handleSlackEventRequest(req, res);
+    return;
+  }
+
   const payload = req.body as {
     text?: string;
     token?: string;
@@ -233,10 +344,7 @@ async function handleSlackPRDRequest(req: Request, res: Response): Promise<void>
     return;
   }
 
-  if (
-    config.slackSlashCommandToken &&
-    payload.token !== config.slackSlashCommandToken
-  ) {
+  if (!verifyConfiguredSlackRequest(req, payload.token)) {
     res.status(200).json({
       response_type: "ephemeral",
       text: "Unauthorized Slack command.",
@@ -306,6 +414,174 @@ app.post("/", (req, res) => {
       res.status(200).json({
         response_type: "ephemeral",
         text: "The PRD command failed before it could be processed.",
+      });
+    }
+  });
+});
+
+interface SlackEventRequest {
+  type?: string;
+  challenge?: string;
+  token?: string;
+  event_id?: string;
+  event?: {
+    type?: string;
+    user?: string;
+    text?: string;
+    channel?: string;
+    ts?: string;
+    thread_ts?: string;
+    bot_id?: string;
+  };
+}
+
+function isSlackEventPayload(payload: unknown): payload is SlackEventRequest {
+  if (!payload || typeof payload !== "object") return false;
+  const type = (payload as { type?: unknown }).type;
+  return type === "url_verification" || type === "event_callback";
+}
+
+async function handleSlackEventRequest(req: Request, res: Response): Promise<void> {
+  const payload = req.body as SlackEventRequest;
+
+  if (!verifyConfiguredSlackRequest(req, payload.token)) {
+    res.status(401).send("Unauthorized Slack event.");
+    return;
+  }
+
+  if (payload.type === "url_verification") {
+    res.status(200).json({ challenge: payload.challenge });
+    return;
+  }
+
+  if (payload.type !== "event_callback" || payload.event?.type !== "app_mention") {
+    res.status(200).json({ ok: true });
+    return;
+  }
+
+  if (payload.event_id && processedSlackEventIds.has(payload.event_id)) {
+    res.status(200).json({ ok: true });
+    return;
+  }
+  if (payload.event_id) {
+    processedSlackEventIds.add(payload.event_id);
+    setTimeout(() => processedSlackEventIds.delete(payload.event_id!), 10 * 60 * 1000).unref();
+  }
+
+  res.status(200).json({ ok: true });
+  handleSlackAppMention(payload).catch((err) => {
+    logger.error("SlackEvents", "Failed to handle app mention", {
+      eventId: payload.event_id,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  });
+}
+
+app.post("/api/slack/events", (req, res) => {
+  handleSlackEventRequest(req, res).catch((err) => {
+    logger.error("SlackEvents", "Failed before Slack event acknowledgement", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    if (!res.headersSent) {
+      res.status(200).json({ ok: true });
+    }
+  });
+});
+
+interface SlackInteractionPayload {
+  type?: string;
+  token?: string;
+  response_url?: string;
+  channel?: {
+    id?: string;
+    name?: string;
+  };
+  container?: {
+    channel_id?: string;
+    message_ts?: string;
+    thread_ts?: string;
+  };
+  message?: {
+    ts?: string;
+    thread_ts?: string;
+  };
+  user?: {
+    id?: string;
+    username?: string;
+    name?: string;
+  };
+  actions?: Array<{
+    action_id?: string;
+    value?: string;
+  }>;
+}
+
+async function handleSlackInteractionRequest(req: Request, res: Response): Promise<void> {
+  const payload = parseSlackInteractionPayload(req);
+  if (!payload) {
+    res.status(400).send("Missing Slack interaction payload.");
+    return;
+  }
+
+  if (!verifySlackRequest(req, payload.token)) {
+    res.status(401).send("Unauthorized Slack interaction.");
+    return;
+  }
+
+  const action = payload.actions?.[0];
+  if (!action?.action_id || !action.value) {
+    res.status(200).json({
+      response_type: "ephemeral",
+      text: "Unsupported PRD action.",
+    });
+    return;
+  }
+
+  if (action.action_id === "approve_linear_tickets") {
+    res.status(200).json({
+      response_type: "ephemeral",
+      text: "Creating one Linear ticket from the approved PRD...",
+    });
+
+    handleLinearTicketApproval(action.value, payload).catch((err) => {
+      logger.error("SlackInteraction", "Failed to handle Linear ticket approval", {
+        sessionId: action.value,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+    return;
+  }
+
+  if (action.action_id === "merge_github_pr") {
+    res.status(200).json({
+      response_type: "ephemeral",
+      text: "Merging the linked GitHub PR and closing the task...",
+    });
+
+    handleGitHubPRMergeApproval(action.value, payload).catch((err) => {
+      logger.error("SlackInteraction", "Failed to handle GitHub PR merge approval", {
+        automationId: action.value,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+    return;
+  }
+
+  res.status(200).json({
+    response_type: "ephemeral",
+    text: "Unsupported PRD action.",
+  });
+}
+
+app.post("/api/slack/interactions", (req, res) => {
+  handleSlackInteractionRequest(req, res).catch((err) => {
+    logger.error("SlackInteraction", "Failed before Slack acknowledgement", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    if (!res.headersSent) {
+      res.status(200).json({
+        response_type: "ephemeral",
+        text: "The Slack approval action failed before it could be processed.",
       });
     }
   });
@@ -546,6 +822,1113 @@ async function handleSlackPRDCommand(
   });
 }
 
+async function handleSlackAppMention(payload: SlackEventRequest): Promise<void> {
+  const event = payload.event;
+  if (!event?.channel || event.bot_id) return;
+
+  if (!config.slackBotToken) {
+    logger.warn("SlackEvents", "Cannot reply to app mention without SLACK_BOT_TOKEN", {
+      channel: event.channel,
+      eventId: payload.event_id,
+    });
+    return;
+  }
+
+  const text = event.text ?? "";
+  const wantsStatus = /status|state|progress|running|current|what'?s happening|where are we/i.test(text);
+  const message = wantsStatus
+    ? await buildBotStatusMessage()
+    : [
+        "I can report the current SDLC pipeline status.",
+        "Try mentioning me with `status`, `current status`, or `what is running?`.",
+      ].join("\n");
+
+  await postSlackChatMessage(config.slackBotToken, {
+    channel: event.channel,
+    thread_ts: event.thread_ts ?? event.ts,
+    text: message,
+  });
+}
+
+async function buildBotStatusMessage(): Promise<string> {
+  const latestSession = await sessionStore.getLatestPRDSession();
+  const tasks = await sessionStore.listRecentCodingAutomationTasks(12);
+  const latestIssues = latestSession ? await sessionStore.getLinearIssues(latestSession.id) : [];
+  const latestBatch = latestSession ? await sessionStore.getLinearIssueBatch(latestSession.id) : null;
+  const activeMeetSessions = Array.from(activeSessions.values())
+    .filter((session) => session.status !== "completed" && session.status !== "error")
+    .sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime());
+
+  const runningTasks = tasks.filter((task) => task.status === "codex_running");
+  const queuedTasks = tasks.filter((task) => ["pending_github_issue", "github_issue_created"].includes(task.status));
+  const reviewTasks = tasks.filter((task) => task.status === "pr_open");
+  const errorTasks = tasks.filter((task) => task.status === "error");
+
+  const lines = [
+    "*Current bot status*",
+    activeMeetSessions.length > 0
+      ? `*Meet bot:* ${activeMeetSessions.map(formatMeetSessionStatus).join("\n")}`
+      : "*Meet bot:* no active Meet session right now.",
+    latestSession
+      ? `*Latest PRD:* \`${latestSession.id}\` · ${latestSession.status} · ${latestSession.transcript.length} transcript segment${latestSession.transcript.length === 1 ? "" : "s"}`
+      : "*Latest PRD:* none yet.",
+    config.githubRepo
+      ? `*Coding repo:* \`${config.githubRepo}\``
+      : "*Coding repo:* none selected.",
+    latestBatch
+      ? `*Linear:* ${latestBatch.status}${latestIssues.length ? ` · ${latestIssues.length} ticket${latestIssues.length === 1 ? "" : "s"}` : ""}`
+      : "*Linear:* no approved ticket batch for the latest PRD.",
+    formatTaskGroup("Codex running", runningTasks, 3),
+    formatTaskGroup("Queued for Codex", queuedTasks, 3),
+    formatTaskGroup("PRs ready for review", reviewTasks, 4),
+    errorTasks.length ? formatTaskGroup("Needs attention", errorTasks, 3) : undefined,
+    `*Live view:* ${buildCodexLiveUrl(latestSession ? { sessionId: latestSession.id } : {})}`,
+  ].filter(Boolean);
+
+  return lines.join("\n");
+}
+
+function formatMeetSessionStatus(session: BotSession): string {
+  const ageMin = Math.max(0, Math.round((Date.now() - session.startedAt.getTime()) / 60_000));
+  return `\`${session.id}\` · ${session.status} · ${ageMin}m · ${session.meetUrl}`;
+}
+
+function formatTaskGroup(label: string, tasks: CodingAutomationRecord[], limit: number): string {
+  if (tasks.length === 0) return `*${label}:* none.`;
+  const shown = tasks.slice(0, limit).map((task) => {
+    const id = task.linearIdentifier ?? "Task";
+    const pr = task.githubPrUrl ? ` · <${task.githubPrUrl}|PR #${task.githubPrNumber}>` : "";
+    const issue = !task.githubPrUrl && task.githubIssueUrl ? ` · <${task.githubIssueUrl}|issue #${task.githubIssueNumber}>` : "";
+    const error = task.error ? ` · ${truncateForSlack(task.error, 120)}` : "";
+    return `• ${id}: ${task.linearTitle}${pr}${issue}${error}`;
+  });
+  const more = tasks.length > limit ? `• +${tasks.length - limit} more` : undefined;
+  return [`*${label}:*`, ...shown, more].filter(Boolean).join("\n");
+}
+
+interface SlackThreadTarget {
+  channel: string;
+  threadTs: string;
+}
+
+interface SlackThreadMessage extends SlackThreadTarget {
+  ts: string;
+}
+
+async function handleLinearTicketApproval(
+  sessionId: string,
+  payload: SlackInteractionPayload,
+): Promise<void> {
+  const responseUrl = payload.response_url;
+  const approvedBy = formatSlackUser(payload);
+  let loadingMessage: SlackThreadMessage | null = null;
+
+  try {
+    const session = activeSessions.get(sessionId) ?? await sessionStore.getSession(sessionId);
+    if (!session?.prd) {
+      await postSlackInteractionResponse(responseUrl, {
+        response_type: "ephemeral",
+        text: "No completed PRD was found for that session.",
+      });
+      return;
+    }
+
+    if (!config.linearApiKey || !config.linearTeamId) {
+      await postSlackInteractionResponse(responseUrl, {
+        response_type: "ephemeral",
+        text: "Linear is not configured yet. Set LINEAR_API_KEY and LINEAR_TEAM_ID, then retry the approval.",
+      });
+      return;
+    }
+
+    const existingIssues = await sessionStore.getLinearIssues(session.id);
+    if (existingIssues.length > 0) {
+      await postLinearIssueReply(payload, responseUrl, buildLinearIssueMessage(
+        session.id,
+        existingIssues,
+        "A Linear ticket was already created for this PRD.",
+        "in_channel",
+      ));
+      return;
+    }
+
+    const existingBatch = await sessionStore.getLinearIssueBatch(session.id);
+    if (existingBatch?.status === "creating") {
+      await postSlackInteractionResponse(responseUrl, {
+        response_type: "ephemeral",
+        text: "Linear ticket creation is already in progress for this PRD.",
+      });
+      return;
+    }
+
+    await sessionStore.markLinearIssueBatch(session.id, "creating", {
+      approvedBy,
+      approvedAt: new Date(),
+    });
+
+    loadingMessage = await postLinearTicketLoadingReply(payload, responseUrl, session.id, approvedBy);
+
+    logger.info("LinearApproval", "Generating one Linear ticket from approved PRD", {
+      sessionId: session.id,
+      approvedBy,
+    });
+
+    const ticketSpecs = (await generateLinearTicketSpecs(config.geminiApiKey, session.prd)).slice(0, 1);
+    const issues = await createLinearIssues(
+      {
+        apiKey: config.linearApiKey,
+        teamId: config.linearTeamId,
+        projectId: config.linearProjectId,
+        assigneeId: config.linearAssigneeId,
+        labelIds: config.linearLabelIds,
+      },
+      ticketSpecs,
+      {
+        sessionId: session.id,
+        meetUrl: session.meetUrl,
+      },
+    );
+
+    const savedIssues = await sessionStore.saveLinearIssues(session.id, issues);
+    const automationTasks = await createCodingAutomationTasksForIssues(session, savedIssues);
+    await sessionStore.markLinearIssueBatch(session.id, "created", {
+      approvedBy,
+      approvedAt: new Date(),
+    });
+
+    await updateLinearTicketLoadingReply(loadingMessage, `Created one Linear ticket for PRD session ${session.id}.`);
+
+    await postLinearIssueReply(payload, responseUrl, buildLinearIssueMessage(
+      session.id,
+      savedIssues,
+      [
+        approvedBy ? `${approvedBy} approved the PRD.` : undefined,
+        "Created one Linear ticket.",
+        automationTasks.length > 0
+          ? `Mirrored ${automationTasks.filter((task) => task.githubIssueUrl).length} GitHub issue${automationTasks.length === 1 ? "" : "s"} for Codex.`
+          : undefined,
+      ].filter(Boolean).join(" "),
+      "in_channel",
+    ));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error("LinearApproval", "Failed to create Linear ticket", {
+      sessionId,
+      error: message,
+    });
+
+    if (isUuid(sessionId)) {
+      await sessionStore.markLinearIssueBatch(sessionId, "error", { error: message });
+    }
+
+    await updateLinearTicketLoadingReply(loadingMessage, `Linear ticket creation failed: ${message}`);
+
+    await postSlackInteractionResponse(responseUrl, {
+      response_type: "ephemeral",
+      text: `Could not create the Linear ticket: ${message}`,
+    });
+  }
+}
+
+async function postLinearTicketLoadingReply(
+  payload: SlackInteractionPayload,
+  responseUrl: string | undefined,
+  sessionId: string,
+  approvedBy: string | undefined,
+): Promise<SlackThreadMessage | null> {
+  const message = buildLinearTicketLoadingMessage(sessionId, approvedBy);
+  const posted = await postSlackThreadReply(payload, message);
+  if (posted) return posted;
+
+  await postSlackInteractionResponse(responseUrl, message);
+  return null;
+}
+
+async function updateLinearTicketLoadingReply(
+  message: SlackThreadMessage | null,
+  text: string,
+): Promise<void> {
+  if (!message || !config.slackBotToken) return;
+
+  try {
+    await postSlackChatUpdate(config.slackBotToken, {
+      channel: message.channel,
+      ts: message.ts,
+      text,
+      blocks: [
+        {
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text,
+          },
+        },
+      ],
+    });
+  } catch (err) {
+    logger.warn("SlackInteraction", "Could not update Linear ticket loading reply", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+async function postLinearIssueReply(
+  payload: SlackInteractionPayload,
+  responseUrl: string | undefined,
+  message: SlackWebhookPayload,
+): Promise<void> {
+  const posted = await postSlackThreadReply(payload, message);
+  if (posted) return;
+
+  await postSlackInteractionResponse(responseUrl, message);
+}
+
+async function postSlackThreadReply(
+  payload: SlackInteractionPayload,
+  message: SlackWebhookPayload,
+): Promise<SlackThreadMessage | null> {
+  const target = getSlackInteractionThreadTarget(payload);
+  if (!target || !config.slackBotToken) return null;
+
+  try {
+    const result = await postSlackChatMessage(config.slackBotToken, {
+      channel: target.channel,
+      thread_ts: target.threadTs,
+      text: message.text,
+      blocks: message.blocks,
+    });
+
+    if (!result.ts) return null;
+
+    return {
+      channel: result.channel ?? target.channel,
+      threadTs: target.threadTs,
+      ts: result.ts,
+    };
+  } catch (err) {
+    logger.warn("SlackInteraction", "Could not post threaded Slack reply; falling back to response_url", {
+      error: err instanceof Error ? err.message : String(err),
+      channel: target.channel,
+      threadTs: target.threadTs,
+    });
+    return null;
+  }
+}
+
+function getSlackInteractionThreadTarget(payload: SlackInteractionPayload): SlackThreadTarget | null {
+  const channel = payload.channel?.id ?? payload.container?.channel_id;
+  const threadTs = payload.container?.thread_ts
+    ?? payload.message?.thread_ts
+    ?? payload.container?.message_ts
+    ?? payload.message?.ts;
+
+  if (!channel || !threadTs) return null;
+  return { channel, threadTs };
+}
+
+async function createCodingAutomationTasksForIssues(
+  session: BotSession,
+  issues: LinearIssueRecord[],
+): Promise<CodingAutomationRecord[]> {
+  const githubConfig = getGitHubConfig();
+  const tasks: CodingAutomationRecord[] = [];
+
+  for (const issue of issues) {
+    let task = await sessionStore.createCodingAutomationTask(session.id, issue, {
+      prdItem: issue.title,
+    });
+
+    if (!githubConfig || task.githubIssueNumber) {
+      tasks.push(task);
+      continue;
+    }
+
+    try {
+      const githubIssue = await createGitHubIssue(githubConfig, {
+        title: `${issue.identifier ? `${issue.identifier}: ` : ""}${issue.title}`,
+        body: buildGitHubIssueBody(session, issue),
+        labels: buildGitHubLabels(issue),
+      });
+
+      task = await sessionStore.updateCodingAutomationTask(task.id, "github_issue_created", {
+        githubIssueNumber: githubIssue.number,
+        githubIssueUrl: githubIssue.htmlUrl,
+      });
+      tasks.push(task);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error("GitHubAutomation", "Failed to mirror Linear ticket to GitHub", {
+        sessionId: session.id,
+        linearId: issue.linearId,
+        error: message,
+      });
+      task = await sessionStore.updateCodingAutomationTask(task.id, "error", { error: message });
+      tasks.push(task);
+    }
+  }
+
+  return tasks;
+}
+
+async function handleGitHubPRMergeApproval(
+  automationId: string,
+  payload: SlackInteractionPayload,
+): Promise<void> {
+  const responseUrl = payload.response_url;
+  const approvedBy = formatSlackUser(payload);
+
+  try {
+    const task = await sessionStore.getCodingAutomationTask(automationId);
+    if (!task?.githubPrNumber) {
+      await postSlackInteractionResponse(responseUrl, {
+        response_type: "ephemeral",
+        text: "No linked GitHub PR was found for that automation task.",
+      });
+      return;
+    }
+
+    const githubConfig = getGitHubConfig();
+    if (!githubConfig) {
+      await postSlackInteractionResponse(responseUrl, {
+        response_type: "ephemeral",
+        text: "GitHub automation is not configured. Set GITHUB_TOKEN and GITHUB_REPO.",
+      });
+      return;
+    }
+
+    await mergeGitHubPullRequest(
+      githubConfig,
+      task.githubPrNumber,
+      `Merge ${task.linearIdentifier ?? task.linearTitle}`,
+    );
+
+    const closedTask = await closeCompletedAutomationTask(task.id, approvedBy, {
+      postToSlack: false,
+    });
+    await postSlackInteractionResponse(responseUrl, buildAutomationCompleteMessage(closedTask, approvedBy));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await sessionStore.updateCodingAutomationTask(automationId, "error", { error: message }).catch(() => undefined);
+    await postSlackInteractionResponse(responseUrl, {
+      response_type: "ephemeral",
+      text: `Could not merge the linked PR: ${message}`,
+    });
+  }
+}
+
+async function processCodingAutomationQueue(): Promise<void> {
+  if (codingAgentWorkerRunning || !config.codingAgentEnabled) return;
+  codingAgentWorkerRunning = true;
+
+  try {
+    await mirrorPendingGitHubIssues();
+    await processReadyCodingTasks();
+    await syncMergedPullRequests();
+  } finally {
+    codingAgentWorkerRunning = false;
+  }
+}
+
+async function mirrorPendingGitHubIssues(): Promise<void> {
+  if (!config.githubToken) return;
+
+  const tasks = await sessionStore.listCodingAutomationTasks(["pending_github_issue"], 10);
+  for (const task of tasks) {
+    const session = await sessionStore.getSession(task.sessionId);
+    if (!session) continue;
+    const githubConfig = getGitHubConfig();
+    if (!githubConfig) continue;
+
+    try {
+      const githubIssue = await createGitHubIssue(githubConfig, {
+        title: `${task.linearIdentifier ? `${task.linearIdentifier}: ` : ""}${task.linearTitle}`,
+        body: buildGitHubIssueBody(session, task),
+        labels: buildGitHubLabels(task),
+      });
+      await sessionStore.updateCodingAutomationTask(task.id, "github_issue_created", {
+        githubIssueNumber: githubIssue.number,
+        githubIssueUrl: githubIssue.htmlUrl,
+      });
+    } catch (err) {
+      await sessionStore.updateCodingAutomationTask(task.id, "error", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+}
+
+async function processReadyCodingTasks(): Promise<void> {
+  if (!config.codingAgentEnabled || !config.githubToken) return;
+
+  const tasks = await sessionStore.listCodingAutomationTasks(["github_issue_created"], 1);
+  for (const task of tasks) {
+    if (!task.githubIssueNumber || !task.githubIssueUrl) continue;
+    const githubConfig = getGitHubConfig();
+    if (!githubConfig) continue;
+
+    try {
+      const codingConfig = getCodingAgentConfig();
+      if (!codingConfig) continue;
+      await sessionStore.updateCodingAutomationTask(task.id, "codex_running", { error: "" });
+      const result = await runCodingAgentTask(codingConfig, {
+        automationId: task.id,
+        sessionId: task.sessionId,
+        prdItem: task.prdItem ?? task.linearTitle,
+        linearIdentifier: task.linearIdentifier,
+        linearUrl: task.linearUrl,
+        githubIssueNumber: task.githubIssueNumber,
+        githubIssueUrl: task.githubIssueUrl,
+        title: task.linearTitle,
+        description: buildCodingAgentDescription(task),
+      });
+
+      const pullRequest = await createGitHubPullRequest(githubConfig, {
+        title: `${task.linearIdentifier ? `${task.linearIdentifier}: ` : ""}${task.linearTitle}`,
+        body: buildPullRequestBody(task, result),
+        head: result.branchName,
+        base: config.codingAgentBaseBranch,
+      });
+
+      const updated = await sessionStore.updateCodingAutomationTask(task.id, "pr_open", {
+        githubPrNumber: pullRequest.number,
+        githubPrUrl: pullRequest.htmlUrl,
+        branchName: result.branchName,
+        codexSummary: result.changeSummary,
+      });
+
+      await createGitHubIssueComment(
+        githubConfig,
+        task.githubIssueNumber,
+        `Codex opened PR #${pullRequest.number}: ${pullRequest.htmlUrl}`,
+      );
+      await postSlackPRReview(updated);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error("CodingAgent", "Failed to complete coding automation task", {
+        automationId: task.id,
+        linearId: task.linearId,
+        error: message,
+      });
+      await sessionStore.updateCodingAutomationTask(task.id, "error", { error: message });
+      await postSlackAutomationError(task, message);
+    }
+  }
+}
+
+async function syncMergedPullRequests(): Promise<void> {
+  if (!config.githubToken) return;
+
+  const tasks = await sessionStore.listCodingAutomationTasks(["pr_open"], 10);
+  for (const task of tasks) {
+    if (!task.githubPrNumber) continue;
+    const githubConfig = getGitHubConfig();
+    if (!githubConfig) continue;
+    const pullRequest = await getGitHubPullRequest(githubConfig, task.githubPrNumber);
+    if (pullRequest.merged) {
+      await closeCompletedAutomationTask(task.id, "GitHub merge sync");
+    }
+  }
+}
+
+async function closeCompletedAutomationTask(
+  automationId: string,
+  approvedBy?: string,
+  options: {
+    postToSlack?: boolean;
+  } = {},
+): Promise<CodingAutomationRecord> {
+  const task = await sessionStore.getCodingAutomationTask(automationId);
+  if (!task) {
+    throw new Error(`Automation task not found: ${automationId}`);
+  }
+
+  const githubConfig = getGitHubConfig();
+  if (githubConfig && task.githubIssueNumber) {
+    await closeGitHubIssue(
+      githubConfig,
+      task.githubIssueNumber,
+      `Completed by ${task.githubPrUrl ?? "the linked pull request"}.`,
+    );
+  }
+
+  if (config.linearApiKey && (config.linearDoneStateId || config.linearTeamId)) {
+    try {
+      await closeLinearIssue(
+        {
+          apiKey: config.linearApiKey,
+          doneStateId: config.linearDoneStateId,
+          teamId: config.linearTeamId,
+        },
+        task.linearId,
+      );
+    } catch (err) {
+      logger.error("LinearAutomation", "Failed to close linked Linear ticket after PR merge", {
+        automationId,
+        linearId: task.linearId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  const closedTask = await sessionStore.updateCodingAutomationTask(automationId, "closed", {
+    approvedBy,
+    mergedAt: new Date(),
+  });
+  if (options.postToSlack ?? true) {
+    await postSlackAutomationComplete(closedTask, approvedBy);
+  }
+  return closedTask;
+}
+
+function publicCodingTask(task: CodingAutomationRecord): Record<string, unknown> {
+  return {
+    id: task.id,
+    sessionId: task.sessionId,
+    linearIdentifier: task.linearIdentifier,
+    linearTitle: task.linearTitle,
+    linearUrl: task.linearUrl,
+    githubIssueNumber: task.githubIssueNumber,
+    githubIssueUrl: task.githubIssueUrl,
+    githubPrNumber: task.githubPrNumber,
+    githubPrUrl: task.githubPrUrl,
+    branchName: task.branchName,
+    prdItem: task.prdItem,
+    status: task.status,
+    error: task.error,
+    updatedAt: task.updatedAt,
+  };
+}
+
+async function buildCodingTaskSnapshot(task: CodingAutomationRecord): Promise<Record<string, unknown>> {
+  const taskDir = getCodingTaskDir(task.id);
+  const [files, gitStatus, gitDiff, codexLog] = await Promise.all([
+    listCodingTaskFiles(taskDir).catch(() => []),
+    runGitForSnapshot(taskDir, ["status", "--short"]).catch((err: unknown) => formatSnapshotError(err)),
+    runGitForSnapshot(taskDir, ["diff", "--", "."]).catch((err: unknown) => formatSnapshotError(err)),
+    readTail(path.join(taskDir, "codex-run.log"), 40_000).catch(() => ""),
+  ]);
+
+  const statusPaths = new Set(
+    gitStatus
+      .split(/\r?\n/)
+      .map((line) => line.slice(3).trim())
+      .filter(Boolean),
+  );
+
+  const annotatedFiles = files.map((file) => ({
+    ...file,
+    changed: statusPaths.has(file.path),
+  }));
+
+  const activeFile = annotatedFiles
+    .filter((file) => !file.path.endsWith(".log") && file.path !== ".codex-task.md")
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)[0];
+
+  return {
+    task: publicCodingTask(task),
+    running: task.status === "codex_running",
+    taskDir,
+    activeFile: activeFile?.path,
+    files: annotatedFiles.slice(0, 300),
+    gitStatus,
+    gitDiff: trimForApi(gitDiff, 60_000),
+    codexLog: trimForApi(codexLog, 60_000),
+  };
+}
+
+function getCodingTaskDir(taskId: string): string {
+  return path.resolve(config.codingAgentWorkdir, taskId);
+}
+
+function safeJoinInside(root: string, relativePath: string): string | null {
+  const cleanRelativePath = relativePath.replace(/^\/+/, "");
+  const resolved = path.resolve(root, cleanRelativePath);
+  const normalizedRoot = path.resolve(root);
+  if (resolved !== normalizedRoot && !resolved.startsWith(`${normalizedRoot}${path.sep}`)) {
+    return null;
+  }
+  return resolved;
+}
+
+async function listCodingTaskFiles(root: string): Promise<Array<{
+  path: string;
+  size: number;
+  mtimeMs: number;
+}>> {
+  const ignored = new Set([".git", "node_modules", ".next", "dist", "build", "coverage", ".turbo"]);
+  const output: Array<{ path: string; size: number; mtimeMs: number }> = [];
+
+  async function walk(dir: string, relativeDir = ""): Promise<void> {
+    if (output.length >= 500) return;
+    const entries = await readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (ignored.has(entry.name)) continue;
+      const relativePath = path.posix.join(relativeDir.split(path.sep).join(path.posix.sep), entry.name);
+      const absolutePath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(absolutePath, relativePath);
+      } else if (entry.isFile()) {
+        const fileStat = await stat(absolutePath);
+        output.push({
+          path: relativePath,
+          size: fileStat.size,
+          mtimeMs: fileStat.mtimeMs,
+        });
+      }
+    }
+  }
+
+  await walk(root);
+  return output.sort((a, b) => b.mtimeMs - a.mtimeMs);
+}
+
+async function runGitForSnapshot(cwd: string, args: string[]): Promise<string> {
+  const result = await execFileAsync("git", args, {
+    cwd,
+    maxBuffer: 1024 * 1024 * 4,
+  });
+  return [result.stdout, result.stderr].filter(Boolean).join("\n");
+}
+
+async function readTail(filePath: string, maxChars: number): Promise<string> {
+  const content = await readFile(filePath, "utf8");
+  if (content.length <= maxChars) return content;
+  return content.slice(content.length - maxChars);
+}
+
+function formatSnapshotError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function trimForApi(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, maxLength - 20)}\n...truncated...`;
+}
+
+function getGitHubConfig(): GitHubConfig | null {
+  if (!config.githubToken || !config.githubRepo) return null;
+  try {
+    return {
+      token: config.githubToken,
+      repo: parseGitHubRepo(config.githubRepo),
+    };
+  } catch (err) {
+    logger.error("GitHubAutomation", "Invalid GitHub automation config", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
+
+function getCodingAgentConfig(): CodingAgentConfig | null {
+  const githubConfig = getGitHubConfig();
+  if (!githubConfig || !config.codingAgentEnabled) return null;
+
+  return {
+    githubToken: config.githubToken!,
+    githubRepo: githubConfig.repo,
+    githubUsername: config.githubUsername,
+    workdir: config.codingAgentWorkdir,
+    baseBranch: config.codingAgentBaseBranch,
+    command: config.codingAgentCommand,
+    timeoutMs: config.codingAgentTimeoutMs,
+  };
+}
+
+function buildGitHubIssueBody(
+  session: BotSession,
+  issue: LinearIssueRecord | CodingAutomationRecord,
+): string {
+  const title = getLinearRecordTitle(issue);
+  const identifier = getLinearRecordIdentifier(issue);
+  const linearUrl = getLinearRecordUrl(issue);
+
+  return [
+    `## Source`,
+    `- PRD session: \`${session.id}\``,
+    `- PRD item: ${title}`,
+    identifier ? `- Linear ticket: ${linearUrl ? `[${identifier}](${linearUrl})` : identifier}` : undefined,
+    config.githubRepo ? `- Coding repo: \`${config.githubRepo}\`` : undefined,
+    `- Meeting: ${session.meetUrl}`,
+    "",
+    "## Agent Handoff",
+    "Codex should implement this issue, open a pull request, and wait for Slack review before merge.",
+    "",
+    "## PRD Context",
+    truncateForSlack(session.prd ?? "No PRD content available.", 4000),
+  ]
+    .filter((line) => line !== undefined)
+    .join("\n");
+}
+
+function buildGitHubLabels(issue: LinearIssueRecord | CodingAutomationRecord): string[] {
+  const identifier = getLinearRecordIdentifier(issue);
+  return Array.from(new Set([
+    ...config.githubIssueLabels,
+    "linear",
+    identifier ? normalizeGitHubLabel(`linear-${identifier}`) : undefined,
+  ].filter(Boolean) as string[]));
+}
+
+function getLinearRecordTitle(issue: LinearIssueRecord | CodingAutomationRecord): string {
+  return "linearTitle" in issue ? issue.linearTitle : issue.title;
+}
+
+function getLinearRecordIdentifier(issue: LinearIssueRecord | CodingAutomationRecord): string | undefined {
+  return "linearTitle" in issue ? issue.linearIdentifier : issue.identifier;
+}
+
+function getLinearRecordUrl(issue: LinearIssueRecord | CodingAutomationRecord): string | undefined {
+  return "linearTitle" in issue ? issue.linearUrl : issue.url;
+}
+
+function normalizeGitHubLabel(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 45);
+}
+
+function buildCodingAgentDescription(task: CodingAutomationRecord): string {
+  return [
+    task.prdItem ?? task.linearTitle,
+    "",
+    task.linearUrl ? `Linear: ${task.linearUrl}` : undefined,
+    task.githubIssueUrl ? `GitHub issue: ${task.githubIssueUrl}` : undefined,
+    "",
+    "Create production-quality changes, include tests when relevant, and leave the PR ready for review.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function buildPullRequestBody(
+  task: CodingAutomationRecord,
+  result: {
+    branchName: string;
+    commitSha: string;
+    changeSummary: string;
+  },
+): string {
+  return [
+    `## Linked Work`,
+    task.linearIdentifier
+      ? `- Linear: ${task.linearUrl ? `[${task.linearIdentifier}](${task.linearUrl})` : task.linearIdentifier}`
+      : undefined,
+    task.githubIssueNumber
+      ? `- GitHub issue: #${task.githubIssueNumber}`
+      : undefined,
+    `- PRD session: \`${task.sessionId}\``,
+    `- PRD item: ${task.prdItem ?? task.linearTitle}`,
+    "",
+    "## Codex Result",
+    "```text",
+    truncateForSlack(result.changeSummary || "No change summary returned.", 5000),
+    "```",
+    "",
+    `Commit: \`${result.commitSha}\``,
+    `Branch: \`${result.branchName}\``,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+async function postSlackPRReview(task: CodingAutomationRecord): Promise<void> {
+  const session = await sessionStore.getSession(task.sessionId);
+  const webhookUrl = session ? getSessionSlackWebhook(session) : config.slackWebhookUrl;
+  await postSlackWebhook(webhookUrl, buildSlackPRReviewMessage(task));
+}
+
+function buildSlackPRReviewMessage(task: CodingAutomationRecord): SlackWebhookPayload {
+  const fields: Array<Record<string, string>> = [
+    {
+      type: "mrkdwn",
+      text: `*Linear*\n${task.linearUrl ? `<${task.linearUrl}|${task.linearIdentifier ?? task.linearTitle}>` : task.linearIdentifier ?? task.linearTitle}`,
+    },
+    {
+      type: "mrkdwn",
+      text: `*GitHub Issue*\n${task.githubIssueUrl ? `<${task.githubIssueUrl}|#${task.githubIssueNumber}>` : "Pending"}`,
+    },
+    {
+      type: "mrkdwn",
+      text: `*Pull Request*\n${task.githubPrUrl ? `<${task.githubPrUrl}|#${task.githubPrNumber}>` : "Pending"}`,
+    },
+    {
+      type: "mrkdwn",
+      text: `*PRD Item*\n${truncateForSlack(task.prdItem ?? task.linearTitle, 160)}`,
+    },
+  ];
+
+  return {
+    text: `Codex opened PR ${task.githubPrUrl ?? ""}`,
+    response_type: "in_channel",
+    blocks: [
+      {
+        type: "header",
+        text: {
+          type: "plain_text",
+          text: "Codex PR Ready",
+          emoji: true,
+        },
+      },
+      {
+        type: "section",
+        fields,
+      },
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `*Code changes*\n\`\`\`\n${truncateForSlack(task.codexSummary ?? "No summary captured.", 1800)}\n\`\`\``,
+        },
+      },
+      {
+        type: "actions",
+        elements: [
+          {
+            type: "button",
+            action_id: "open_codex_live_task",
+            url: buildCodexLiveUrl({ taskId: task.id }),
+            text: {
+              type: "plain_text",
+              text: "Watch Live Codex",
+              emoji: true,
+            },
+          },
+          {
+            type: "button",
+            action_id: "merge_github_pr",
+            style: "primary",
+            text: {
+              type: "plain_text",
+              text: "Merge PR",
+              emoji: true,
+            },
+            value: task.id,
+            confirm: {
+              title: {
+                type: "plain_text",
+                text: "Merge this PR?",
+              },
+              text: {
+                type: "mrkdwn",
+                text: "This will squash-merge the linked GitHub PR, close the GitHub issue, close the linked Linear ticket, and post a final summary.",
+              },
+              confirm: {
+                type: "plain_text",
+                text: "Merge",
+              },
+              deny: {
+                type: "plain_text",
+                text: "Cancel",
+              },
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+async function postSlackAutomationError(task: CodingAutomationRecord, message: string): Promise<void> {
+  const session = await sessionStore.getSession(task.sessionId);
+  const webhookUrl = session ? getSessionSlackWebhook(session) : config.slackWebhookUrl;
+  await postSlackWebhook(webhookUrl, {
+    text: `Coding automation failed for ${task.linearIdentifier ?? task.linearTitle}: ${message}`,
+    response_type: "in_channel",
+  });
+}
+
+async function postSlackAutomationComplete(
+  task: CodingAutomationRecord,
+  approvedBy?: string,
+): Promise<void> {
+  const session = await sessionStore.getSession(task.sessionId);
+  const webhookUrl = session ? getSessionSlackWebhook(session) : config.slackWebhookUrl;
+  await postSlackWebhook(webhookUrl, buildAutomationCompleteMessage(task, approvedBy));
+}
+
+function buildAutomationCompleteMessage(
+  task: CodingAutomationRecord,
+  approvedBy?: string,
+): SlackWebhookPayload {
+  const linearLabel = task.linearIdentifier ?? task.linearTitle;
+  return {
+    response_type: "in_channel",
+    text: `Merged ${task.githubPrUrl ?? "the linked PR"} and closed ${linearLabel}.`,
+    blocks: [
+      {
+        type: "header",
+        text: {
+          type: "plain_text",
+          text: "PR Merged and Task Closed",
+          emoji: true,
+        },
+      },
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: [
+            approvedBy ? `*Approved by:* ${approvedBy}` : undefined,
+            `*Linear:* ${task.linearUrl ? `<${task.linearUrl}|${linearLabel}>` : linearLabel}`,
+            `*GitHub issue:* ${task.githubIssueUrl ? `<${task.githubIssueUrl}|#${task.githubIssueNumber}>` : "Closed"}`,
+            `*Pull request:* ${task.githubPrUrl ? `<${task.githubPrUrl}|#${task.githubPrNumber}>` : "Merged"}`,
+            `*PRD item:* ${task.prdItem ?? task.linearTitle}`,
+          ].filter(Boolean).join("\n"),
+        },
+      },
+    ],
+  };
+}
+
+function truncateForSlack(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, maxLength - 20)}\n...truncated...`;
+}
+
+function buildCodexLiveUrl(options: { sessionId?: string; taskId?: string } = {}): string {
+  const url = new URL("/codex-live", config.publicBaseUrl);
+  if (options.sessionId) url.searchParams.set("session", options.sessionId);
+  if (options.taskId) url.searchParams.set("task", options.taskId);
+  return url.toString();
+}
+
+function buildLinearIssueMessage(
+  sessionId: string,
+  issues: Array<LinearIssue | LinearIssueRecord>,
+  leadText: string,
+  responseType: "ephemeral" | "in_channel",
+): SlackWebhookPayload {
+  const issueLines = issues
+    .map((issue) => {
+      const label = issue.identifier ?? issue.title;
+      return issue.url
+        ? `• <${issue.url}|${label}> - ${issue.title}`
+        : `• ${label} - ${issue.title}`;
+    })
+    .join("\n");
+
+  return {
+    response_type: responseType,
+    text: `${leadText}\n${issueLines}`,
+    blocks: [
+      {
+        type: "header",
+        text: {
+          type: "plain_text",
+          text: "Linear Ticket Ready",
+          emoji: true,
+        },
+      },
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `*PRD session:* \`${sessionId}\`\n${leadText}`,
+        },
+      },
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: issueLines || "No Linear ticket was created.",
+        },
+      },
+      {
+        type: "actions",
+        elements: [
+          {
+            type: "button",
+            action_id: "open_codex_live_session",
+            url: buildCodexLiveUrl({ sessionId }),
+            text: {
+              type: "plain_text",
+              text: "Watch Live Codex",
+              emoji: true,
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function buildLinearTicketLoadingMessage(
+  sessionId: string,
+  approvedBy: string | undefined,
+): SlackWebhookPayload {
+  const leadText = [
+    approvedBy ? `${approvedBy} approved the PRD.` : "The PRD was approved.",
+    "Creating one Linear ticket now. I will reply here when it is ready.",
+  ].join(" ");
+
+  return {
+    response_type: "in_channel",
+    text: `Creating one Linear ticket for PRD session ${sessionId}...`,
+    blocks: [
+      {
+        type: "header",
+        text: {
+          type: "plain_text",
+          text: "Creating Linear Ticket",
+          emoji: true,
+        },
+      },
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `*PRD session:* \`${sessionId}\`\n${leadText}`,
+        },
+      },
+      {
+        type: "context",
+        elements: [
+          {
+            type: "mrkdwn",
+            text: "Generating one implementation-ready ticket from the approved PRD.",
+          },
+        ],
+      },
+    ],
+  };
+}
+
+async function postSlackInteractionResponse(
+  responseUrl: string | undefined,
+  payload: SlackWebhookPayload,
+): Promise<void> {
+  if (!responseUrl) {
+    logger.warn("SlackInteraction", "Slack interaction did not include response_url", {
+      text: payload.text,
+    });
+    return;
+  }
+
+  await postSlackWebhook(responseUrl, payload);
+}
+
+function parseSlackInteractionPayload(req: Request): SlackInteractionPayload | null {
+  const body = req.body as { payload?: unknown };
+  if (typeof body.payload !== "string") {
+    return null;
+  }
+
+  try {
+    return JSON.parse(body.payload) as SlackInteractionPayload;
+  } catch {
+    return null;
+  }
+}
+
+function formatSlackUser(payload: SlackInteractionPayload): string | undefined {
+  const user = payload.user;
+  if (!user) return undefined;
+  return user.username ?? user.name ?? user.id;
+}
+
 function buildSlackCommandHelp(sessionId: string): string {
   return [
     "*PRD commands*",
@@ -559,6 +1942,57 @@ function buildSlackCommandHelp(sessionId: string): string {
 
 function getSessionSlackWebhook(session: BotSession): string {
   return session.slackWebhookUrl ?? config.slackWebhookUrl;
+}
+
+function captureRawBody(req: IncomingMessage, _res: ServerResponse, buffer: Buffer): void {
+  (req as IncomingMessage & { rawBody?: string }).rawBody = buffer.toString("utf8");
+}
+
+function verifyConfiguredSlackRequest(req: Request, fallbackToken?: string): boolean {
+  if (!config.slackSigningSecret && !config.slackSlashCommandToken) {
+    return true;
+  }
+  return verifySlackRequest(req, fallbackToken);
+}
+
+function verifySlackRequest(req: Request, fallbackToken?: string): boolean {
+  if (config.slackSigningSecret && verifySlackSignature(req, config.slackSigningSecret)) {
+    return true;
+  }
+
+  return Boolean(config.slackSlashCommandToken && fallbackToken === config.slackSlashCommandToken);
+}
+
+function verifySlackSignature(req: Request, signingSecret: string): boolean {
+  const timestamp = req.header("x-slack-request-timestamp");
+  const signature = req.header("x-slack-signature");
+  const rawBody = (req as Request & { rawBody?: string }).rawBody;
+
+  if (!timestamp || !signature || !rawBody) {
+    return false;
+  }
+
+  const timestampSeconds = Number(timestamp);
+  if (!Number.isFinite(timestampSeconds)) {
+    return false;
+  }
+
+  const fiveMinutes = 60 * 5;
+  if (Math.abs(Math.floor(Date.now() / 1000) - timestampSeconds) > fiveMinutes) {
+    return false;
+  }
+
+  const baseString = `v0:${timestamp}:${rawBody}`;
+  const expected = `v0=${crypto
+    .createHmac("sha256", signingSecret)
+    .update(baseString)
+    .digest("hex")}`;
+
+  try {
+    return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
+  } catch {
+    return false;
+  }
 }
 
 function normalizeMeetUrl(value: string | undefined): string | null {
@@ -609,9 +2043,31 @@ async function startServer(): Promise<void> {
     logger.info("Server", "  POST /api/start-bot   — Start the bot with a Meet URL");
     logger.info("Server", "  POST /api/stop-bot    — Stop a running bot session");
     logger.info("Server", "  POST /api/slack/prd   — Slack PRD Q&A and roadmap updates");
+    logger.info("Server", "  POST /api/slack/interactions — Slack approval callbacks");
+    logger.info("Server", "  POST /api/slack/events — Slack mention status callbacks");
     logger.info("Server", "  GET  /api/status/:id  — Check bot session status");
     logger.info("Server", "  GET  /health          — Health check");
   });
+
+  if (config.codingAgentEnabled) {
+    logger.info("CodingAgent", "Starting coding automation worker", {
+      pollMs: config.codingAgentPollMs,
+      githubRepo: config.githubRepo,
+      baseBranch: config.codingAgentBaseBranch,
+    });
+    setInterval(() => {
+      processCodingAutomationQueue().catch((err) => {
+        logger.error("CodingAgent", "Coding automation worker failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+    }, config.codingAgentPollMs).unref();
+    processCodingAutomationQueue().catch((err) => {
+      logger.error("CodingAgent", "Initial coding automation worker run failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+  }
 }
 
 startServer().catch((err) => {

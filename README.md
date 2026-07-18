@@ -1,18 +1,38 @@
-# AI PRD Generator Bot
+# SDLC0 AI PRD Generator
 
-A Node.js/TypeScript backend service that joins **Google Meet** calls via **Playwright**, records meeting audio, transcribes speaker turns with **Deepgram**, generates a **Product Requirements Document (PRD)** using **Google Gemini**, and posts it to a **Slack** channel.
+```text
+┌──────────────────────────────────────────────────────────────┐
+│  MEETINGS IN. PRDS OUT. TICKETS READY. CODE IN MOTION.       │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**SDLC0** is a long-running Node.js/TypeScript service that joins Google Meet
+calls with Playwright, records meeting audio, transcribes speaker turns with
+Deepgram, turns the transcript into a PRD with Gemini, posts the formatted PRD
+to Slack, creates one Linear ticket after approval, and can hand that ticket to a
+Codex-powered coding worker.
+
+| Surface | What It Does |
+|---------|--------------|
+| `Meet Bot` | Joins calls, records audio, captures transcript context |
+| `PRD Engine` | Generates versioned PRDs and roadmap updates |
+| `Slack Control Room` | Posts PRDs, answers questions, handles approvals |
+| `Linear + GitHub` | Turns each approved PRD into one Linear ticket and one GitHub issue |
+| `Live Codex` | Shows coding-agent files, logs, diffs, PR state, and review flow |
 
 ## Architecture
 
-```
-HTTP POST /api/start-bot
-    │
-    ▼
-┌──────────────┐     ┌──────────┐     ┌────────────────┐     ┌───────────┐
-│  Playwright  │────▶│ Deepgram │────▶│  Google Gemini  │────▶│   Slack   │
-│  (Meet Bot)  │     │  (STT)   │     │   (PRD Gen)    │     │  (Post)   │
-└──────────────┘     └──────────┘     └────────────────┘     └───────────┘
-  Join + record       Audio → text     Transcript → PRD       PRD → Channel
+```text
+POST /api/start-bot
+      |
+      v
+[ PLAYWRIGHT MEET BOT ] -> [ DEEPGRAM STT ] -> [ GEMINI PRD ]
+      |                                           |
+      v                                           v
+[ POSTGRES STATE ] <---------------------- [ SLACK PRD + Q&A ]
+      |
+      v
+[ LINEAR APPROVAL ] -> [ GITHUB ISSUE ] -> [ CODEX WORKER ] -> [ PR REVIEW ]
 ```
 
 ## Prerequisites
@@ -23,6 +43,8 @@ HTTP POST /api/start-bot
 - A **Deepgram API key** ([Get one here](https://console.deepgram.com/))
 - A **PostgreSQL database** for stateful sessions, transcripts, PRDs, and roadmap updates
 - A **Slack Incoming Webhook URL** ([Create an incoming webhook](https://api.slack.com/messaging/webhooks))
+- A **Slack Signing Secret** for slash commands and interactive approval buttons
+- A **Linear API key** plus Linear team ID if you want approved PRDs to create Linear tickets
 
 ## Quick Start
 
@@ -63,25 +85,30 @@ npm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000) to add the bot to a Meet
-call and choose the Slack channel webhook for that session.
+call.
 
 ### 5. Start the bot from the API
 
 ```bash
 curl -X POST http://localhost:3000/api/start-bot \
   -H "Content-Type: application/json" \
-  -d '{"meetUrl": "https://meet.google.com/xxx-yyyy-zzz", "slackWebhookUrl": "https://hooks.slack.com/services/..."}'
+  -d '{"meetUrl": "https://meet.google.com/xxx-yyyy-zzz"}'
 ```
 
 ## API Endpoints
 
 | Method | Endpoint               | Description                    |
 |--------|------------------------|--------------------------------|
+| GET    | `/codex-live`          | Live Codex coding-session dashboard |
 | POST   | `/api/start-bot`       | Start the bot with a Meet URL  |
-| POST   | `/api/slack/test`      | Send a test message to a Slack incoming webhook |
 | POST   | `/api/stop-bot`        | Stop a running bot session     |
 | POST   | `/api/slack/prd`       | Slack slash command for PRD Q&A and roadmap updates |
+| POST   | `/api/slack/interactions` | Slack approval button callbacks for Linear ticket creation |
+| POST   | `/api/slack/events`    | Slack app mention events for current bot status |
 | GET    | `/api/config`          | Frontend config and setup status |
+| GET    | `/api/coding/tasks`    | Recent Codex automation tasks |
+| GET    | `/api/coding/tasks/:id` | Live Codex task snapshot |
+| GET    | `/api/coding/tasks/:id/file` | Safe file preview for a Codex task |
 | GET    | `/api/status/:id`      | Check bot session status       |
 | GET    | `/health`              | Health check                   |
 
@@ -89,13 +116,11 @@ curl -X POST http://localhost:3000/api/start-bot \
 
 ```json
 {
-  "meetUrl": "https://meet.google.com/xxx-yyyy-zzz",
-  "slackWebhookUrl": "https://hooks.slack.com/services/..."
+  "meetUrl": "https://meet.google.com/xxx-yyyy-zzz"
 }
 ```
 
-`meetUrl` may also be a meeting code such as `xxx-yyyy-zzz`. `slackWebhookUrl`
-is optional; when omitted, the app uses `SLACK_WEBHOOK_URL`.
+`meetUrl` may also be a meeting code such as `xxx-yyyy-zzz`.
 **Response (202):**
 ```json
 {
@@ -155,6 +180,114 @@ Additional Slack workflow features:
 - `history` lists all PRD versions for the current or targeted session.
 - `show vN` reposts a specific PRD version in the formatted Slack layout.
 - `diff vA vB` summarizes product, scope, roadmap, and risk changes between two versions.
+- Each posted PRD includes an approval button. When approved, the app turns that PRD into one coding-agent-ready Linear ticket and posts the ticket link back to Slack.
+- Mention the bot with `status`, `current status`, or `what is running?` to get the latest Meet, PRD, Linear, GitHub, and Codex status in a thread.
+
+### Slack Bot Mentions
+
+To let users tag the bot in Slack and ask for status, configure the Slack app
+with:
+
+```text
+SLACK_BOT_TOKEN=xoxb-...
+SLACK_SIGNING_SECRET=...
+```
+
+The bot token needs these OAuth scopes:
+
+```text
+app_mentions:read
+chat:write
+```
+
+In Slack **Event Subscriptions**, set the Request URL to:
+
+```text
+https://your-public-server.example.com/api/slack/events
+```
+
+Subscribe to the bot event:
+
+```text
+app_mention
+```
+
+### Slack Linear Approval Setup
+
+Incoming webhooks can post the PRD, but Slack buttons need an interactive
+callback URL. In your Slack app:
+
+1. Enable **Interactivity & Shortcuts**.
+2. Set the Request URL to:
+
+```text
+https://your-public-server.example.com/api/slack/interactions
+```
+
+3. Copy the app **Signing Secret** into `SLACK_SIGNING_SECRET`.
+4. Keep the slash command Request URL as:
+
+```text
+https://your-public-server.example.com/api/slack/prd
+```
+
+Configure Linear with:
+
+```text
+LINEAR_API_KEY=...
+LINEAR_TEAM_ID=...
+```
+
+Optional Linear targeting:
+
+```text
+LINEAR_PROJECT_ID=...
+LINEAR_ASSIGNEE_ID=...
+LINEAR_LABEL_IDS=label_uuid_one,label_uuid_two
+LINEAR_DONE_STATE_ID=...
+```
+
+`LINEAR_DONE_STATE_ID` is optional. If it is omitted, the app tries to close
+merged work with a completed/done state from `LINEAR_TEAM_ID`.
+
+The approval flow is idempotent per PRD session. If Slack retries an approval or
+someone clicks again, the app returns the already-created Linear ticket links
+instead of creating duplicates.
+
+### GitHub + Codex automation
+
+When GitHub automation is configured, each approved Linear ticket is mirrored
+to a GitHub issue in `GITHUB_REPO`. If `CODING_AGENT_ENABLED=true`, a background
+worker picks up those issues, creates a branch in the configured repo, runs the
+Codex CLI command, pushes changes, opens a PR, and posts a Slack review card.
+The Slack card links the PR, Linear ticket, PRD item, code-change summary, and
+Live Codex session.
+Clicking **Merge PR** in Slack squash-merges the PR, closes the GitHub issue,
+closes the linked Linear ticket, and posts the final summary to Slack.
+
+```text
+GITHUB_TOKEN=...
+GITHUB_REPO=owner/repo
+GITHUB_USERNAME=your_github_username
+OPENAI_API_KEY=...
+GITHUB_ISSUE_LABELS=prd-generated,codex-agent
+CODING_AGENT_ENABLED=true
+CODING_AGENT_BASE_BRANCH=master
+CODING_AGENT_WORKDIR=/tmp/ai-prd-coding-agent
+CODING_AGENT_COMMAND=codex exec --model gpt-4o-mini --full-auto --skip-git-repo-check {prompt}
+```
+
+`CODING_AGENT_COMMAND` is intentionally configurable because Codex CLI
+installations and safety flags can differ by environment. The backend writes a
+task prompt file and replaces `{prompt}`, `{promptFile}`, and `{branch}` before
+running the command. Older commands using `--input-file {promptFile}` are
+normalized to the current Codex positional prompt format automatically.
+
+On Render, Codex runs inside the same Docker web service. The Dockerfile installs
+`@openai/codex` globally, `OPENAI_API_KEY` authenticates the Codex CLI, and
+`GITHUB_TOKEN` is used only for cloning/pushing the configured repo and creating
+GitHub issues/PRs. Use a GitHub token with access to `GITHUB_REPO`; the worker
+pushes Codex branches directly to that repository.
 
 ## Important Notes
 
@@ -162,6 +295,7 @@ Additional Slack workflow features:
 - Meeting audio is recorded to `recordings/<sessionId>.webm` and sent to Deepgram after the call ends. The `recordings/` directory is ignored by Git.
 - Session status, transcripts, generated PRDs, roadmap updates, and PRD version history are stored in PostgreSQL so Slack Q&A works after app restarts.
 - PRDs are posted as Slack Block Kit sections with metadata, command hints, and section-level formatting rather than a raw Markdown dump.
+- Linear approvals require Slack Interactivity & Shortcuts configured at `/api/slack/interactions`; an incoming webhook alone cannot receive button clicks.
 - Deepgram diarization labels speakers as `Speaker 0`, `Speaker 1`, etc. Raw mixed meeting audio does not include Google Meet participant names.
 - The bot keeps camera off in Meet so it appears as a named participant rather than a video/background tile.
 - The bot keeps its microphone muted and captures remote meeting audio for transcription.
@@ -205,6 +339,11 @@ GEMINI_API_KEY=...
 DEEPGRAM_API_KEY=...
 DATABASE_URL=...
 SLACK_WEBHOOK_URL=...
+PUBLIC_BASE_URL=https://your-render-service.onrender.com
+SLACK_SIGNING_SECRET=...
+SLACK_BOT_TOKEN=...
+LINEAR_API_KEY=...
+LINEAR_TEAM_ID=...
 BOT_DISPLAY_NAME=AI Notetaker
 AUTH_STATE_PATH=/etc/secrets/auth-state.json
 PLAYWRIGHT_HEADLESS=true
@@ -214,6 +353,21 @@ Optional:
 
 ```text
 SLACK_SLASH_COMMAND_TOKEN=...
+SLACK_INVITE_URL=...
+LINEAR_INVITE_URL=...
+LINEAR_PROJECT_ID=...
+LINEAR_ASSIGNEE_ID=...
+LINEAR_LABEL_IDS=label_uuid_one,label_uuid_two
+LINEAR_DONE_STATE_ID=...
+GITHUB_TOKEN=...
+GITHUB_REPO=owner/repo
+GITHUB_USERNAME=your_github_username
+OPENAI_API_KEY=...
+GITHUB_ISSUE_LABELS=prd-generated,codex-agent
+CODING_AGENT_ENABLED=true
+CODING_AGENT_BASE_BRANCH=master
+CODING_AGENT_WORKDIR=/tmp/ai-prd-coding-agent
+CODING_AGENT_COMMAND=codex exec --model gpt-4o-mini --full-auto --skip-git-repo-check {prompt}
 ```
 
 ### 3. Verify
@@ -236,6 +390,18 @@ Use this URL for the Slack slash command:
 https://your-render-service.onrender.com/api/slack/prd
 ```
 
+Use this URL for Slack Interactivity & Shortcuts:
+
+```text
+https://your-render-service.onrender.com/api/slack/interactions
+```
+
+Use this URL for Slack Event Subscriptions:
+
+```text
+https://your-render-service.onrender.com/api/slack/events
+```
+
 ## Tech Stack
 
 - **Runtime**: Node.js + TypeScript
@@ -243,5 +409,6 @@ https://your-render-service.onrender.com/api/slack/prd
 - **Speech-to-Text**: Deepgram Nova-3 with utterances and diarization
 - **LLM**: Google Gemini (gemini-2.5-flash)
 - **Database**: PostgreSQL
-- **Messaging**: Slack incoming webhooks and slash commands
+- **Messaging**: Slack incoming webhooks, slash commands, and interactive buttons
+- **Issue Tracking**: Linear GraphQL API
 - **Server**: Express

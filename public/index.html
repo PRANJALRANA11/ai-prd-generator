@@ -3,7 +3,9 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>AI PRD Generator</title>
+    <title>SDLC With AI</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="shortcut icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -11,110 +13,290 @@
       <header class="topbar" aria-label="Primary">
         <a class="brand" href="/" aria-label="AI PRD Generator home">
           <span class="brand-mark">&gt;_</span>
-          <span>prd0<span>.ai</span></span>
+          <span>sdlc0<span>.ai</span></span>
         </a>
         <nav class="nav-links" aria-label="Page">
           <a class="active" href="#launch">Launch</a>
+          <a href="#process">Process</a>
+          <a href="#tracking">Track</a>
+          <a href="/codex-live">Codex</a>
           <a href="#commands">Commands</a>
-          <a href="#history">History</a>
         </nav>
       </header>
 
       <main>
-        <section class="notice" aria-label="Product update">
-          <span class="live-dot" aria-hidden="true"></span>
-          <div>
-            <strong>Meet-to-PRD workflow is live.</strong>
-            <span>Join a Google Meet, transcribe with Deepgram, generate the PRD, then post it to Slack.</span>
-          </div>
-          <a href="#commands">View commands</a>
-        </section>
-
         <section class="hero" id="launch">
           <div class="hero-copy">
             <div class="yc-badge">
               <span>AI</span>
-              Built for product teams
+              Product ops control room
             </div>
-            <h1>Meetings become PRDs in <span class="strike">hours</span><span class="accent">minutes</span></h1>
+            <h1>
+              SDLC in <span class="cut-word">Hours</span> Minutes With Codex.
+            </h1>
             <p>
-              Add the bot to a meeting, choose the Slack channel, and let the transcript,
-              product brief, roadmap updates, and version history stay connected.
+              Drop the bot into Meet, ship the PRD to Slack, approve the
+              implementation plan, create one clean Linear ticket for the team and
+              let codex solve it.
             </p>
-            <div class="trust-row" aria-label="Workflow">
-              <span>Google Meet</span>
-              <span>Deepgram</span>
-              <span>Gemini</span>
-              <span>Slack</span>
-            </div>
           </div>
 
           <form class="launch-panel" id="launch-form">
             <div class="panel-heading">
               <p>Launch bot</p>
-              <span id="config-status">Checking setup...</span>
             </div>
 
             <label for="meet-url">Meeting ID or Google Meet URL</label>
-            <div class="input-row">
-              <input
-                id="meet-url"
-                name="meetUrl"
-                type="text"
-                autocomplete="off"
-                placeholder="abc-defg-hij"
-                required
-              />
-              <button class="icon-button" type="button" id="paste-meet" title="Paste meeting link" aria-label="Paste meeting link">
-                <span aria-hidden="true">+</span>
-              </button>
-            </div>
-
-            <label for="slack-webhook">Slack channel webhook</label>
             <input
-              id="slack-webhook"
-              name="slackWebhookUrl"
-              type="url"
-              inputmode="url"
-              placeholder="Uses configured webhook when blank"
+              id="meet-url"
+              name="meetUrl"
+              type="text"
+              autocomplete="off"
+              placeholder="abc-defg-hij"
+              required
             />
 
-            <div class="actions">
-              <button class="primary-button" type="submit">Add bot to Meet</button>
-              <button class="secondary-button" type="button" id="test-slack">Test Slack</button>
-            </div>
+            <button class="cta-button primary-button" type="submit">
+              Add bot to Meet
+            </button>
 
-            <div class="status-box" id="status-box" role="status" aria-live="polite">
-              Ready for a meeting code.
+            <div class="invite-row">
+              <a
+                class="cta-button join-invite-button join-slack-button hidden"
+                id="join-slack"
+                href="#"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Join my Slack
+              </a>
+              <a
+                class="cta-button join-invite-button join-linear-button hidden"
+                id="join-linear"
+                href="#"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Join my Linear
+              </a>
             </div>
 
             <section class="live-log-panel" aria-label="Live call log">
               <div class="live-log-heading">
                 <span>Live call log</span>
-                <button class="clear-log-button" type="button" id="clear-log">Clear</button>
+                <button class="clear-log-button" type="button" id="clear-log">
+                  Clear
+                </button>
               </div>
               <ol class="live-log-list" id="live-log-list">
-                <li class="empty-log">Start a bot session to see live call events.</li>
+                <li class="empty-log">
+                  Start a bot session to see live call events.
+                </li>
               </ol>
             </section>
           </form>
+          <div class="video-launcher hero-video">
+            <video
+              class="video-thumbnail"
+              muted
+              playsinline
+              preload="metadata"
+              aria-hidden="true"
+              tabindex="-1"
+            >
+              <source
+                src="https://1fdfqyad2nxrq4jx.public.blob.vercel-storage.com/output.mp4"
+                type="video/mp4"
+              />
+            </video>
+            <span class="demo-badge">Demo</span>
+            <button
+              class="video-play-button"
+              type="button"
+              id="open-demo-video"
+            >
+              <span class="play-icon" aria-hidden="true"></span>
+              <span class="sr-only">Play demo</span>
+            </button>
+          </div>
         </section>
 
-        <section class="command-strip" id="commands" aria-label="Slack command examples">
+        <dialog
+          class="video-dialog"
+          id="demo-video-dialog"
+          aria-label="Product demo video"
+        >
+          <div class="video-dialog-shell">
+            <button
+              class="video-close-button"
+              type="button"
+              id="close-demo-video"
+              aria-label="Close video"
+            >
+              X
+            </button>
+            <video
+              muted
+              loop
+              playsinline
+              controls
+              preload="metadata"
+              aria-label="AI PRD Generator workflow demo"
+              id="demo-video"
+            >
+              <source
+                src="https://1fdfqyad2nxrq4jx.public.blob.vercel-storage.com/output.mp4"
+                type="video/mp4"
+              />
+            </video>
+            <div class="video-fallback">
+              <strong>Demo video slot</strong>
+              <span
+                >Add <code>public/demo.mp4</code> to play the recorded
+                walkthrough here.</span
+              >
+            </div>
+          </div>
+        </dialog>
+
+        <section
+          class="process-section"
+          id="process"
+          aria-label="Step by step process"
+        >
+          <div class="process-heading">
+            <span class="section-kicker">Process</span>
+            <h2>From call to shipped work.</h2>
+            <p>
+              The bot turns messy product conversations into an approved plan,
+              then hands the team one clear implementation ticket.
+            </p>
+          </div>
+          <div class="process-grid">
+            <article class="process-card">
+              <span>01</span>
+              <h3>Join the call</h3>
+              <p>
+                Paste a Meet link and send the notetaker into the room with the
+                right Slack destination.
+              </p>
+            </article>
+            <article class="process-card">
+              <span>02</span>
+              <h3>Draft the PRD</h3>
+              <p>
+                Deepgram captures the discussion, then Gemini shapes the
+                transcript into a structured PRD.
+              </p>
+            </article>
+            <article class="process-card">
+              <span>03</span>
+              <h3>Approve the ticket</h3>
+              <p>
+                Review the PRD in Slack, approve the plan, and create a single
+                Linear ticket from the agreed scope.
+              </p>
+            </article>
+            <article class="process-card">
+              <span>04</span>
+              <h3>Ship the work</h3>
+              <p>
+                Codex can pick up the Linear tasks, deliver the changes, and
+                close the loop.
+              </p>
+            </article>
+          </div>
+        </section>
+
+        <section
+          class="tracking-section"
+          id="tracking"
+          aria-label="Pipeline tracking"
+        >
+          <article class="tracking-card mention-card">
+            <span class="section-kicker" id="mentions-kicker">Mentions</span>
+            <h2>Ask Slack where the bot is.</h2>
+            <p>
+              Tag the bot with a status question and get the current Meet, PRD,
+              Linear, GitHub, and Codex state back in the same Slack thread.
+            </p>
+            <a
+              class="cta-button tracking-link"
+              href="https://join.slack.com/t/lexilayer/shared_invite/zt-4476ln1e9-HC2d46sllP8kGmTZ5xEq3Q"
+            >
+              Join my Slack
+            </a>
+          </article>
+          <article class="tracking-card codex-card">
+            <span class="section-kicker" id="live-kicker">Live Session</span>
+            <h2>Track every ticket with Codex.</h2>
+            <p>
+              Open the Live Codex route to inspect the active session, queued
+              ticket, changed files, logs, diffs, linked PRs, and review state.
+            </p>
+            <a class="cta-button tracking-link" href="/codex-live">
+              Open Live Codex
+            </a>
+          </article>
+        </section>
+
+        <section
+          class="command-strip"
+          id="commands"
+          aria-label="Slack command examples"
+        >
           <div>
             <span class="section-kicker">Slack</span>
-            <h2>Useful commands, without digging through docs.</h2>
+            <h2>Commands that keep the PRD alive.</h2>
+            <p class="section-subheading">
+              Update roadmap decisions, inspect versions, and ask product
+              questions without leaving Slack.
+            </p>
           </div>
           <div class="commands-grid">
-            <code>/prd help</code>
-            <code>/prd history</code>
-            <code>/prd show v2</code>
-            <code>/prd diff v1 v2</code>
-            <code>/prd roadmap Q3 beta, Q4 launch</code>
-            <code>/prd What changed in scope?</code>
+            <article class="command-card">
+              <span>Help</span>
+              <p>See every PRD and tracking command.</p>
+              <code>/prd help</code>
+            </article>
+            <article class="command-card">
+              <span>Versions</span>
+              <p>List the saved PRD version history.</p>
+              <code>/prd history</code>
+            </article>
+            <article class="command-card">
+              <span>Snapshot</span>
+              <p>Repost a specific PRD version.</p>
+              <code>/prd show v2</code>
+            </article>
+            <article class="command-card">
+              <span>Compare</span>
+              <p>Summarize what changed between versions.</p>
+              <code>/prd diff v1 v2</code>
+            </article>
+            <article class="command-card">
+              <span>Roadmap</span>
+              <p>Update the PRD from roadmap notes.</p>
+              <code>/prd roadmap Q3 beta, Q4 launch</code>
+            </article>
+            <article class="command-card">
+              <span>Ask</span>
+              <p>Ask questions against the latest PRD.</p>
+              <code>/prd What changed in scope?</code>
+            </article>
           </div>
         </section>
       </main>
+
+      <footer class="footer" aria-label="Footer">
+        <div class="footer-brand">
+          <span class="brand-mark">&gt;_</span>
+          <div>
+            <strong>sdlc0.ai</strong>
+            <p>Meetings in. Features out.</p>
+          </div>
+        </div>
+      </footer>
     </div>
     <script src="/app.js" type="module"></script>
   </body>

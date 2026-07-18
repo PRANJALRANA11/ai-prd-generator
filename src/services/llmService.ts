@@ -1,5 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
 import { logger } from "../utils/logger.js";
+import type { LinearTicketSpec } from "./linearService.js";
 import type { TranscriptSegment } from "./meetBot.js";
 
 const PRD_SYSTEM_PROMPT = `You are an expert Product Manager. You will be given a raw transcript from a product meeting. 
@@ -236,4 +237,85 @@ export async function comparePRDVersions(
     throw new Error("Gemini returned an empty PRD version comparison.");
   }
   return comparison;
+}
+
+export async function generateLinearTicketSpecs(
+  apiKey: string,
+  prdMarkdown: string,
+): Promise<LinearTicketSpec[]> {
+  const ctx = "LLMService";
+  const genai = new GoogleGenAI({ apiKey });
+
+  logger.info(ctx, "Generating Linear ticket spec from PRD", {
+    prdLength: prdMarkdown.length,
+  });
+
+  const response = await genai.models.generateContent({
+    model: "gemini-2.5-flash",
+    contents: [
+      {
+        role: "user",
+        parts: [
+          {
+            text: `PRD:\n\n${prdMarkdown}\n\nCreate exactly one implementation-ready Linear ticket from this PRD. The ticket should represent the full approved PRD scope and include enough detail for a coding agent to start work.`,
+          },
+        ],
+      },
+    ],
+    config: {
+      systemInstruction:
+        "You convert an approved PRD into one concise Linear ticket for a coding agent. Return only valid JSON: an array with exactly one object containing string fields title and description. The description must include context, implementation notes, acceptance criteria, and any open questions. Do not include Markdown fences or commentary.",
+      temperature: 0.2,
+      maxOutputTokens: 4096,
+    },
+  });
+
+  const rawText = response.text?.trim() ?? "";
+  if (!rawText) {
+    throw new Error("Gemini returned an empty Linear ticket response.");
+  }
+
+  const tickets = parseLinearTicketSpecs(rawText);
+  if (tickets.length === 0) {
+    throw new Error("Gemini did not return a Linear ticket.");
+  }
+
+  logger.info(ctx, "Linear ticket spec generated", { ticketCount: tickets.length });
+  return tickets.slice(0, 1);
+}
+
+function parseLinearTicketSpecs(rawText: string): LinearTicketSpec[] {
+  const cleaned = rawText
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch {
+    const arrayMatch = cleaned.match(/\[[\s\S]*\]/);
+    if (!arrayMatch) {
+      throw new Error("Could not parse Linear ticket JSON from Gemini response.");
+    }
+    parsed = JSON.parse(arrayMatch[0]);
+  }
+
+  if (!Array.isArray(parsed)) {
+    throw new Error("Linear ticket JSON must be an array.");
+  }
+
+  return parsed
+    .map((item) => {
+      if (!isRecord(item)) return null;
+      const title = typeof item.title === "string" ? item.title.trim() : "";
+      const description = typeof item.description === "string" ? item.description.trim() : "";
+      if (!title || !description) return null;
+      return { title, description };
+    })
+    .filter((item): item is LinearTicketSpec => item !== null);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
