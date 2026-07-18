@@ -72,7 +72,8 @@ app.get("/api/config", (_req, res) => {
     slackEventsPath: "/api/slack/events",
     slackBotTokenConfigured: Boolean(config.slackBotToken),
     linearConfigured: Boolean(config.linearApiKey && config.linearTeamId),
-    githubAutomationConfigured: Boolean(config.githubToken && config.githubRepo),
+    githubAutomationConfigured: Boolean(config.githubToken),
+    defaultGithubRepo: config.githubRepo,
     codingAgentEnabled: config.codingAgentEnabled,
   });
 });
@@ -93,7 +94,7 @@ app.get("/api/coding/tasks", async (_req, res) => {
   const tasks = await sessionStore.listRecentCodingAutomationTasks(30);
   res.json({
     enabled: config.codingAgentEnabled,
-    repo: config.githubRepo,
+    defaultRepo: config.githubRepo,
     workdir: config.codingAgentWorkdir,
     tasks: tasks.map(publicCodingTask),
   });
@@ -164,12 +165,15 @@ app.get("/api/coding/tasks/:id/file", async (req, res) => {
  * that can be used to check status or stop the bot.
  */
 app.post("/api/start-bot", async (req, res) => {
-  const { meetUrl, slackWebhookUrl } = req.body as {
+  const { meetUrl, slackWebhookUrl, githubRepo } = req.body as {
     meetUrl?: string;
     slackWebhookUrl?: string;
+    githubRepo?: string;
   };
   const normalizedMeetUrl = normalizeMeetUrl(meetUrl);
   const normalizedSlackWebhookUrl = parseOptionalWebhook(slackWebhookUrl, res);
+  if (res.headersSent) return;
+  const normalizedGithubRepo = parseOptionalGitHubRepo(githubRepo, res);
   if (res.headersSent) return;
 
   if (!normalizedMeetUrl) {
@@ -186,15 +190,21 @@ app.post("/api/start-bot", async (req, res) => {
     status: "joining",
     transcript: [],
     slackWebhookUrl: normalizedSlackWebhookUrl,
+    githubRepo: normalizedGithubRepo,
     startedAt: new Date(),
     _stopRequested: false,
   };
 
   activeSessions.set(sessionId, session);
 
-  logger.info("Server", "Starting bot session", { sessionId, meetUrl: normalizedMeetUrl });
+  logger.info("Server", "Starting bot session", {
+    sessionId,
+    meetUrl: normalizedMeetUrl,
+    githubRepo: normalizedGithubRepo,
+  });
   appendSessionLog(sessionId, "info", "Bot launch requested", {
     meetUrl: normalizedMeetUrl,
+    githubRepo: normalizedGithubRepo,
     mode: "notetaker",
   });
 
@@ -269,6 +279,7 @@ app.get("/api/status/:sessionId", async (req, res) => {
     sessionId: session.id,
     status: session.status,
     meetUrl: session.meetUrl,
+    githubRepo: session.githubRepo ?? config.githubRepo ?? null,
     startedAt: session.startedAt.toISOString(),
     endedAt: session.endedAt?.toISOString() ?? null,
     transcriptSegments: session.transcript.length,
@@ -869,6 +880,9 @@ async function buildBotStatusMessage(): Promise<string> {
     latestSession
       ? `*Latest PRD:* \`${latestSession.id}\` · ${latestSession.status} · ${latestSession.transcript.length} transcript segment${latestSession.transcript.length === 1 ? "" : "s"}`
       : "*Latest PRD:* none yet.",
+    latestSession?.githubRepo || config.githubRepo
+      ? `*Coding repo:* \`${latestSession?.githubRepo ?? config.githubRepo}\``
+      : "*Coding repo:* none selected.",
     latestBatch
       ? `*Linear:* ${latestBatch.status}${latestIssues.length ? ` · ${latestIssues.length} ticket${latestIssues.length === 1 ? "" : "s"}` : ""}`
       : "*Linear:* no approved ticket batch for the latest PRD.",
@@ -1124,7 +1138,7 @@ async function createCodingAutomationTasksForIssues(
   session: BotSession,
   issues: LinearIssueRecord[],
 ): Promise<CodingAutomationRecord[]> {
-  const githubConfig = getGitHubConfig();
+  const githubConfig = getGitHubConfig(session.githubRepo);
   const tasks: CodingAutomationRecord[] = [];
 
   for (const issue of issues) {
@@ -1181,11 +1195,12 @@ async function handleGitHubPRMergeApproval(
       return;
     }
 
-    const githubConfig = getGitHubConfig();
+    const session = await sessionStore.getSession(task.sessionId);
+    const githubConfig = getGitHubConfig(session?.githubRepo);
     if (!githubConfig) {
       await postSlackInteractionResponse(responseUrl, {
         response_type: "ephemeral",
-        text: "GitHub automation is not configured. Set GITHUB_TOKEN and GITHUB_REPO.",
+        text: "GitHub automation is not configured. Set GITHUB_TOKEN and provide a repo in the launch form or GITHUB_REPO.",
       });
       return;
     }
@@ -1224,13 +1239,14 @@ async function processCodingAutomationQueue(): Promise<void> {
 }
 
 async function mirrorPendingGitHubIssues(): Promise<void> {
-  const githubConfig = getGitHubConfig();
-  if (!githubConfig) return;
+  if (!config.githubToken) return;
 
   const tasks = await sessionStore.listCodingAutomationTasks(["pending_github_issue"], 10);
   for (const task of tasks) {
     const session = await sessionStore.getSession(task.sessionId);
     if (!session) continue;
+    const githubConfig = getGitHubConfig(session.githubRepo);
+    if (!githubConfig) continue;
 
     try {
       const githubIssue = await createGitHubIssue(githubConfig, {
@@ -1251,13 +1267,15 @@ async function mirrorPendingGitHubIssues(): Promise<void> {
 }
 
 async function processReadyCodingTasks(): Promise<void> {
-  const codingConfig = getCodingAgentConfig();
-  const githubConfig = getGitHubConfig();
-  if (!codingConfig || !githubConfig) return;
+  if (!config.codingAgentEnabled || !config.githubToken) return;
 
   const tasks = await sessionStore.listCodingAutomationTasks(["github_issue_created"], 1);
   for (const task of tasks) {
     if (!task.githubIssueNumber || !task.githubIssueUrl) continue;
+    const session = await sessionStore.getSession(task.sessionId);
+    const codingConfig = getCodingAgentConfig(session?.githubRepo);
+    const githubConfig = getGitHubConfig(session?.githubRepo);
+    if (!codingConfig || !githubConfig) continue;
 
     try {
       await sessionStore.updateCodingAutomationTask(task.id, "codex_running", { error: "" });
@@ -1307,12 +1325,14 @@ async function processReadyCodingTasks(): Promise<void> {
 }
 
 async function syncMergedPullRequests(): Promise<void> {
-  const githubConfig = getGitHubConfig();
-  if (!githubConfig) return;
+  if (!config.githubToken) return;
 
   const tasks = await sessionStore.listCodingAutomationTasks(["pr_open"], 10);
   for (const task of tasks) {
     if (!task.githubPrNumber) continue;
+    const session = await sessionStore.getSession(task.sessionId);
+    const githubConfig = getGitHubConfig(session?.githubRepo);
+    if (!githubConfig) continue;
     const pullRequest = await getGitHubPullRequest(githubConfig, task.githubPrNumber);
     if (pullRequest.merged) {
       await closeCompletedAutomationTask(task.id, "GitHub merge sync");
@@ -1332,7 +1352,8 @@ async function closeCompletedAutomationTask(
     throw new Error(`Automation task not found: ${automationId}`);
   }
 
-  const githubConfig = getGitHubConfig();
+  const session = await sessionStore.getSession(task.sessionId);
+  const githubConfig = getGitHubConfig(session?.githubRepo);
   if (githubConfig && task.githubIssueNumber) {
     await closeGitHubIssue(
       githubConfig,
@@ -1495,12 +1516,13 @@ function trimForApi(value: string, maxLength: number): string {
   return `${value.slice(0, maxLength - 20)}\n...truncated...`;
 }
 
-function getGitHubConfig(): GitHubConfig | null {
-  if (!config.githubToken || !config.githubRepo) return null;
+function getGitHubConfig(repoOverride?: string): GitHubConfig | null {
+  const repoValue = repoOverride ?? config.githubRepo;
+  if (!config.githubToken || !repoValue) return null;
   try {
     return {
       token: config.githubToken,
-      repo: parseGitHubRepo(config.githubRepo),
+      repo: parseGitHubRepo(repoValue),
     };
   } catch (err) {
     logger.error("GitHubAutomation", "Invalid GitHub automation config", {
@@ -1510,8 +1532,8 @@ function getGitHubConfig(): GitHubConfig | null {
   }
 }
 
-function getCodingAgentConfig(): CodingAgentConfig | null {
-  const githubConfig = getGitHubConfig();
+function getCodingAgentConfig(repoOverride?: string): CodingAgentConfig | null {
+  const githubConfig = getGitHubConfig(repoOverride);
   if (!githubConfig || !config.codingAgentEnabled) return null;
 
   return {
@@ -1538,6 +1560,7 @@ function buildGitHubIssueBody(
     `- PRD session: \`${session.id}\``,
     `- PRD item: ${title}`,
     identifier ? `- Linear ticket: ${linearUrl ? `[${identifier}](${linearUrl})` : identifier}` : undefined,
+    (session.githubRepo ?? config.githubRepo) ? `- Coding repo: \`${session.githubRepo ?? config.githubRepo}\`` : undefined,
     `- Meeting: ${session.meetUrl}`,
     "",
     "## Agent Handoff",
@@ -2016,6 +2039,21 @@ function parseOptionalWebhook(value: string | undefined, res: Response): string 
   } catch (err) {
     res.status(400).json({
       error: err instanceof Error ? err.message : "Invalid Slack webhook URL.",
+    });
+    return undefined;
+  }
+}
+
+function parseOptionalGitHubRepo(value: string | undefined, res: Response): string | undefined {
+  const input = value?.trim();
+  if (!input) return undefined;
+
+  try {
+    const repo = parseGitHubRepo(input);
+    return `${repo.owner}/${repo.repo}`;
+  } catch (err) {
+    res.status(400).json({
+      error: err instanceof Error ? err.message : "Invalid GitHub repository.",
     });
     return undefined;
   }

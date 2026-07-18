@@ -25,9 +25,15 @@ export interface GitHubConfig {
 const GITHUB_API_ROOT = "https://api.github.com";
 
 export function parseGitHubRepo(value: string): GitHubRepoRef {
-  const match = value.trim().match(/^([^/\s]+)\/([^/\s]+)$/);
+  const normalized = value
+    .trim()
+    .replace(/^https?:\/\/github\.com\//i, "")
+    .replace(/^git@github\.com:/i, "")
+    .replace(/\.git$/i, "")
+    .replace(/\/+$/, "");
+  const match = normalized.match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/);
   if (!match) {
-    throw new Error("GITHUB_REPO must be in owner/repo format.");
+    throw new Error("GitHub repository must be owner/repo or a github.com repository URL.");
   }
   return {
     owner: match[1],

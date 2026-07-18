@@ -72,7 +72,7 @@ call.
 ```bash
 curl -X POST http://localhost:3000/api/start-bot \
   -H "Content-Type: application/json" \
-  -d '{"meetUrl": "https://meet.google.com/xxx-yyyy-zzz", "slackWebhookUrl": "https://hooks.slack.com/services/..."}'
+  -d '{"meetUrl": "https://meet.google.com/xxx-yyyy-zzz", "githubRepo": "owner/repo"}'
 ```
 
 ## API Endpoints
@@ -97,12 +97,13 @@ curl -X POST http://localhost:3000/api/start-bot \
 ```json
 {
   "meetUrl": "https://meet.google.com/xxx-yyyy-zzz",
-  "slackWebhookUrl": "https://hooks.slack.com/services/..."
+  "githubRepo": "owner/repo"
 }
 ```
 
-`meetUrl` may also be a meeting code such as `xxx-yyyy-zzz`. `slackWebhookUrl`
-is optional; when omitted, the app uses `SLACK_WEBHOOK_URL`.
+`meetUrl` may also be a meeting code such as `xxx-yyyy-zzz`. `githubRepo`
+is optional and may be `owner/repo` or a GitHub repository URL. When omitted,
+coding automation falls back to `GITHUB_REPO`.
 **Response (202):**
 ```json
 {
@@ -239,16 +240,19 @@ instead of creating duplicates.
 ### GitHub + Codex automation
 
 When GitHub automation is configured, every approved Linear ticket is mirrored
-to a GitHub issue. If `CODING_AGENT_ENABLED=true`, a background worker picks up
-those issues, creates a branch in the configured repo, runs the Codex CLI command,
-pushes changes, opens a PR, and posts a Slack review card. The Slack card links
-the PR, Linear ticket, PRD item, code-change summary, and Live Codex session.
+to a GitHub issue. The target repo can be entered on the launch form for each
+meeting as `owner/repo` or a GitHub URL; when the field is blank, the app uses
+`GITHUB_REPO` as the default. If `CODING_AGENT_ENABLED=true`, a background worker
+picks up those issues, creates a branch in the selected repo, runs the Codex CLI
+command, pushes changes, opens a PR, and posts a Slack review card. The Slack
+card links the PR, Linear ticket, PRD item, code-change summary, and Live Codex
+session.
 Clicking **Merge PR** in Slack squash-merges the PR, closes the GitHub issue,
 closes the linked Linear ticket, and posts the final summary to Slack.
 
 ```text
 GITHUB_TOKEN=...
-GITHUB_REPO=owner/repo
+GITHUB_REPO=owner/repo # optional default; users can override per meeting
 GITHUB_USERNAME=your_github_username
 OPENAI_API_KEY=...
 GITHUB_ISSUE_LABELS=prd-generated,codex-agent
@@ -266,8 +270,9 @@ normalized to the current Codex positional prompt format automatically.
 
 On Render, Codex runs inside the same Docker web service. The Dockerfile installs
 `@openai/codex` globally, `OPENAI_API_KEY` authenticates the Codex CLI, and
-`GITHUB_TOKEN` is used only for cloning/pushing the target repo and creating
-GitHub issues/PRs. Use a GitHub token with access to `GITHUB_REPO`.
+`GITHUB_TOKEN` is used only for cloning/pushing the selected repo and creating
+GitHub issues/PRs. Public repos can be entered in the launch form, but issue/PR
+creation still requires token permission on the selected repo.
 
 ## Important Notes
 
@@ -340,7 +345,7 @@ LINEAR_ASSIGNEE_ID=...
 LINEAR_LABEL_IDS=label_uuid_one,label_uuid_two
 LINEAR_DONE_STATE_ID=...
 GITHUB_TOKEN=...
-GITHUB_REPO=owner/repo
+GITHUB_REPO=owner/repo # optional default; users can override per meeting
 GITHUB_USERNAME=your_github_username
 OPENAI_API_KEY=...
 GITHUB_ISSUE_LABELS=prd-generated,codex-agent

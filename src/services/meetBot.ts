@@ -19,6 +19,7 @@ export interface BotSession {
   prd?: string;
   roadmap?: string;
   slackWebhookUrl?: string;
+  githubRepo?: string;
   startedAt: Date;
   endedAt?: Date;
   error?: string;
