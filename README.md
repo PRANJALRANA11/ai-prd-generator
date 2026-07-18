@@ -277,7 +277,7 @@ CODING_AGENT_GIT_EMAIL=codex-agent@users.noreply.github.com
 CODING_AGENT_ENABLED=true
 CODING_AGENT_BASE_BRANCH=master
 CODING_AGENT_WORKDIR=/tmp/ai-prd-coding-agent
-CODING_AGENT_COMMAND=codex exec --model gpt-4o-mini --sandbox workspace-write --skip-git-repo-check {prompt}
+CODING_AGENT_COMMAND=codex exec --model gpt-4o-mini --sandbox danger-full-access --skip-git-repo-check {prompt}
 ```
 
 `CODING_AGENT_COMMAND` is intentionally configurable because Codex CLI
@@ -291,7 +291,9 @@ On Render, Codex runs inside the same Docker web service. The Dockerfile install
 `CODEX_API_KEY` for Codex CLI authentication unless `CODEX_API_KEY` is set
 explicitly. `GITHUB_TOKEN` is used only for cloning/pushing the configured repo
 and creating GitHub issues/PRs. Use a GitHub token with access to `GITHUB_REPO`;
-the worker pushes Codex branches directly to that repository.
+the worker pushes Codex branches directly to that repository. Render containers
+can block the Linux bubblewrap sandbox used by `workspace-write`, so the hosted
+command uses `--sandbox danger-full-access` inside the isolated temp clone.
 
 ## Important Notes
 
@@ -374,7 +376,7 @@ CODING_AGENT_GIT_EMAIL=codex-agent@users.noreply.github.com
 CODING_AGENT_ENABLED=true
 CODING_AGENT_BASE_BRANCH=master
 CODING_AGENT_WORKDIR=/tmp/ai-prd-coding-agent
-CODING_AGENT_COMMAND=codex exec --model gpt-4o-mini --sandbox workspace-write --skip-git-repo-check {prompt}
+CODING_AGENT_COMMAND=codex exec --model gpt-4o-mini --sandbox danger-full-access --skip-git-repo-check {prompt}
 ```
 
 ### 3. Verify
@@ -408,6 +410,19 @@ Use this URL for Slack Event Subscriptions:
 ```text
 https://your-render-service.onrender.com/api/slack/events
 ```
+
+### 4. Keep Render Warm
+
+This repo includes a GitHub Actions cron at
+`.github/workflows/render-keepalive.yml` that pings the production health URL
+every 15 minutes:
+
+```text
+https://ai-prd-generator-fshh.onrender.com/health
+```
+
+Run it manually from GitHub Actions with **Render Keepalive → Run workflow**, or
+override the target by changing `RENDER_KEEPALIVE_URL` in the workflow.
 
 ## Tech Stack
 

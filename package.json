@@ -8,6 +8,7 @@
     "start": "tsx src/index.ts",
     "auth-setup": "tsx src/utils/authSetup.ts",
     "import-prd": "tsx scripts/importPrd.ts",
+    "ping:render": "node scripts/pingRender.mjs",
     "build": "tsc",
     "typecheck": "tsc --noEmit"
   },
