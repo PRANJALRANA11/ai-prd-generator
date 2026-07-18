@@ -112,6 +112,7 @@ function buildAgentPrompt(task: CodingAgentTask): string {
     task.description,
     "",
     "## Instructions",
+    "- The target repository is already checked out in the current working directory; do not clone it again.",
     "- Inspect the repository before editing.",
     "- Make the smallest complete code change that satisfies the ticket.",
     "- Add or update tests when the change has meaningful behavior risk.",
@@ -130,7 +131,7 @@ function materializeAgentCommand(
   prompt: string,
 ): string {
   const template = commandTemplate
-    ?? "codex exec --model gpt-4o-mini --sandbox workspace-write --skip-git-repo-check {prompt}";
+    ?? "codex exec --model gpt-4o-mini --sandbox danger-full-access --skip-git-repo-check {prompt}";
 
   const normalizedTemplate = template.replace(/--input-file\s+\{promptFile\}/g, "{prompt}");
 

@@ -1,0 +1,24 @@
+name: Render Keepalive
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Ping Render health endpoint
+        env:
+          RENDER_KEEPALIVE_URL: https://ai-prd-generator-fshh.onrender.com/health
+        run: npm run ping:render

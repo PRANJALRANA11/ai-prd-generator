@@ -67,7 +67,7 @@ services:
       - key: CODING_AGENT_WORKDIR
         value: /tmp/ai-prd-coding-agent
       - key: CODING_AGENT_COMMAND
-        value: codex exec --model gpt-4o-mini --sandbox workspace-write --skip-git-repo-check {prompt}
+        value: codex exec --model gpt-4o-mini --sandbox danger-full-access --skip-git-repo-check {prompt}
 
 databases:
   - name: ai-prd-generator-db
