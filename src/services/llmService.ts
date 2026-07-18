@@ -246,7 +246,7 @@ export async function generateLinearTicketSpecs(
   const ctx = "LLMService";
   const genai = new GoogleGenAI({ apiKey });
 
-  logger.info(ctx, "Generating Linear ticket specs from PRD", {
+  logger.info(ctx, "Generating Linear ticket spec from PRD", {
     prdLength: prdMarkdown.length,
   });
 
@@ -257,14 +257,14 @@ export async function generateLinearTicketSpecs(
         role: "user",
         parts: [
           {
-            text: `PRD:\n\n${prdMarkdown}\n\nCreate implementation-ready Linear tickets from this PRD.`,
+            text: `PRD:\n\n${prdMarkdown}\n\nCreate exactly one implementation-ready Linear ticket from this PRD. The ticket should represent the full approved PRD scope and include enough detail for a coding agent to start work.`,
           },
         ],
       },
     ],
     config: {
       systemInstruction:
-        "You convert a PRD into a concise backlog for a coding agent. Return only valid JSON: an array of 3 to 8 objects with string fields title and description. Each description must include context, implementation notes, acceptance criteria, and any open questions. Do not include Markdown fences or commentary.",
+        "You convert an approved PRD into one concise Linear ticket for a coding agent. Return only valid JSON: an array with exactly one object containing string fields title and description. The description must include context, implementation notes, acceptance criteria, and any open questions. Do not include Markdown fences or commentary.",
       temperature: 0.2,
       maxOutputTokens: 4096,
     },
@@ -277,11 +277,11 @@ export async function generateLinearTicketSpecs(
 
   const tickets = parseLinearTicketSpecs(rawText);
   if (tickets.length === 0) {
-    throw new Error("Gemini did not return any Linear tickets.");
+    throw new Error("Gemini did not return a Linear ticket.");
   }
 
-  logger.info(ctx, "Linear ticket specs generated", { ticketCount: tickets.length });
-  return tickets.slice(0, 8);
+  logger.info(ctx, "Linear ticket spec generated", { ticketCount: tickets.length });
+  return tickets.slice(0, 1);
 }
 
 function parseLinearTicketSpecs(rawText: string): LinearTicketSpec[] {

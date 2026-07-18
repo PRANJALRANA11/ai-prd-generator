@@ -1,6 +1,5 @@
 const form = document.querySelector("#launch-form");
 const meetInput = document.querySelector("#meet-url");
-const githubRepoInput = document.querySelector("#github-repo");
 const joinSlackLink = document.querySelector("#join-slack");
 const joinLinearLink = document.querySelector("#join-linear");
 const liveLogList = document.querySelector("#live-log-list");
@@ -100,7 +99,6 @@ function formatLogData(data) {
   if (data.bytes !== undefined) pieces.push(`${Math.round(data.bytes / 1024)} KB`);
   if (data.durationMs !== undefined) pieces.push(`${Math.round(data.durationMs / 1000)}s`);
   if (data.question) pieces.push(`"${data.question}"`);
-  if (data.githubRepo) pieces.push(`repo: ${data.githubRepo}`);
   if (data.error) pieces.push(String(data.error));
   return pieces.join(" · ");
 }
@@ -155,9 +153,6 @@ async function loadConfig() {
       joinLinearLink.href = config.linearInviteUrl;
       joinLinearLink.classList.remove("hidden");
     }
-    if (response.ok && config.defaultGithubRepo && githubRepoInput && !githubRepoInput.value) {
-      githubRepoInput.value = config.defaultGithubRepo;
-    }
   } catch {
     setStatus("Backend not reachable", "error");
   }
@@ -166,7 +161,6 @@ async function loadConfig() {
 function buildPayload() {
   return {
     meetUrl: meetInput?.value.trim(),
-    githubRepo: githubRepoInput?.value.trim(),
   };
 }
 
@@ -183,7 +177,6 @@ async function pollStatus(sessionId) {
     `${session.transcriptSegments} transcript segment${session.transcriptSegments === 1 ? "" : "s"}`,
   ];
   if (session.error) bits.push(session.error);
-  if (session.githubRepo) bits.push(`Repo: ${session.githubRepo}`);
   setStatus(bits.join("\n"), session.status === "error" ? "error" : "info");
 
   if (session.status === "completed" || session.status === "error") {

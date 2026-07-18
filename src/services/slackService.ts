@@ -186,22 +186,22 @@ function buildPRDMessages(prdMarkdown: string, metadata?: PRDMetadata): SlackWeb
           style: "primary",
           text: {
             type: "plain_text",
-            text: "Approve Linear Tickets",
+            text: "Approve Linear Ticket",
             emoji: true,
           },
           value: metadata.sessionId,
           confirm: {
             title: {
               type: "plain_text",
-              text: "Create Linear tickets?",
+              text: "Create one Linear ticket?",
             },
             text: {
               type: "mrkdwn",
-              text: "This will turn the approved PRD into coding-agent-ready Linear tickets.",
+              text: "This will turn the approved PRD into one coding-agent-ready Linear ticket.",
             },
             confirm: {
               type: "plain_text",
-              text: "Create tickets",
+              text: "Create ticket",
             },
             deny: {
               type: "plain_text",

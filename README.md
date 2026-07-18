@@ -1,18 +1,38 @@
-# AI PRD Generator Bot
+# SDLC0 AI PRD Generator
 
-A Node.js/TypeScript backend service that joins **Google Meet** calls via **Playwright**, records meeting audio, transcribes speaker turns with **Deepgram**, generates a **Product Requirements Document (PRD)** using **Google Gemini**, and posts it to a **Slack** channel.
+```text
+┌──────────────────────────────────────────────────────────────┐
+│  MEETINGS IN. PRDS OUT. TICKETS READY. CODE IN MOTION.       │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**SDLC0** is a long-running Node.js/TypeScript service that joins Google Meet
+calls with Playwright, records meeting audio, transcribes speaker turns with
+Deepgram, turns the transcript into a PRD with Gemini, posts the formatted PRD
+to Slack, creates one Linear ticket after approval, and can hand that ticket to a
+Codex-powered coding worker.
+
+| Surface | What It Does |
+|---------|--------------|
+| `Meet Bot` | Joins calls, records audio, captures transcript context |
+| `PRD Engine` | Generates versioned PRDs and roadmap updates |
+| `Slack Control Room` | Posts PRDs, answers questions, handles approvals |
+| `Linear + GitHub` | Turns each approved PRD into one Linear ticket and one GitHub issue |
+| `Live Codex` | Shows coding-agent files, logs, diffs, PR state, and review flow |
 
 ## Architecture
 
-```
-HTTP POST /api/start-bot
-    │
-    ▼
-┌──────────────┐     ┌──────────┐     ┌────────────────┐     ┌───────────┐
-│  Playwright  │────▶│ Deepgram │────▶│  Google Gemini  │────▶│   Slack   │
-│  (Meet Bot)  │     │  (STT)   │     │   (PRD Gen)    │     │  (Post)   │
-└──────────────┘     └──────────┘     └────────────────┘     └───────────┘
-  Join + record       Audio → text     Transcript → PRD       PRD → Channel
+```text
+POST /api/start-bot
+      |
+      v
+[ PLAYWRIGHT MEET BOT ] -> [ DEEPGRAM STT ] -> [ GEMINI PRD ]
+      |                                           |
+      v                                           v
+[ POSTGRES STATE ] <---------------------- [ SLACK PRD + Q&A ]
+      |
+      v
+[ LINEAR APPROVAL ] -> [ GITHUB ISSUE ] -> [ CODEX WORKER ] -> [ PR REVIEW ]
 ```
 
 ## Prerequisites
@@ -72,7 +92,7 @@ call.
 ```bash
 curl -X POST http://localhost:3000/api/start-bot \
   -H "Content-Type: application/json" \
-  -d '{"meetUrl": "https://meet.google.com/xxx-yyyy-zzz", "githubRepo": "owner/repo"}'
+  -d '{"meetUrl": "https://meet.google.com/xxx-yyyy-zzz"}'
 ```
 
 ## API Endpoints
@@ -96,14 +116,11 @@ curl -X POST http://localhost:3000/api/start-bot \
 
 ```json
 {
-  "meetUrl": "https://meet.google.com/xxx-yyyy-zzz",
-  "githubRepo": "owner/repo"
+  "meetUrl": "https://meet.google.com/xxx-yyyy-zzz"
 }
 ```
 
-`meetUrl` may also be a meeting code such as `xxx-yyyy-zzz`. `githubRepo`
-is optional and may be `owner/repo` or a GitHub repository URL. When omitted,
-coding automation falls back to `GITHUB_REPO`.
+`meetUrl` may also be a meeting code such as `xxx-yyyy-zzz`.
 **Response (202):**
 ```json
 {
@@ -163,7 +180,7 @@ Additional Slack workflow features:
 - `history` lists all PRD versions for the current or targeted session.
 - `show vN` reposts a specific PRD version in the formatted Slack layout.
 - `diff vA vB` summarizes product, scope, roadmap, and risk changes between two versions.
-- Each posted PRD includes an approval button. When approved, the app turns the PRD into coding-agent-ready Linear tickets and posts the ticket links back to Slack.
+- Each posted PRD includes an approval button. When approved, the app turns that PRD into one coding-agent-ready Linear ticket and posts the ticket link back to Slack.
 - Mention the bot with `status`, `current status`, or `what is running?` to get the latest Meet, PRD, Linear, GitHub, and Codex status in a thread.
 
 ### Slack Bot Mentions
@@ -239,20 +256,18 @@ instead of creating duplicates.
 
 ### GitHub + Codex automation
 
-When GitHub automation is configured, every approved Linear ticket is mirrored
-to a GitHub issue. The target repo can be entered on the launch form for each
-meeting as `owner/repo` or a GitHub URL; when the field is blank, the app uses
-`GITHUB_REPO` as the default. If `CODING_AGENT_ENABLED=true`, a background worker
-picks up those issues, creates a branch in the selected repo, runs the Codex CLI
-command, pushes changes, opens a PR, and posts a Slack review card. The Slack
-card links the PR, Linear ticket, PRD item, code-change summary, and Live Codex
-session.
+When GitHub automation is configured, each approved Linear ticket is mirrored
+to a GitHub issue in `GITHUB_REPO`. If `CODING_AGENT_ENABLED=true`, a background
+worker picks up those issues, creates a branch in the configured repo, runs the
+Codex CLI command, pushes changes, opens a PR, and posts a Slack review card.
+The Slack card links the PR, Linear ticket, PRD item, code-change summary, and
+Live Codex session.
 Clicking **Merge PR** in Slack squash-merges the PR, closes the GitHub issue,
 closes the linked Linear ticket, and posts the final summary to Slack.
 
 ```text
 GITHUB_TOKEN=...
-GITHUB_REPO=owner/repo # optional default; users can override per meeting
+GITHUB_REPO=owner/repo
 GITHUB_USERNAME=your_github_username
 OPENAI_API_KEY=...
 GITHUB_ISSUE_LABELS=prd-generated,codex-agent
@@ -270,9 +285,9 @@ normalized to the current Codex positional prompt format automatically.
 
 On Render, Codex runs inside the same Docker web service. The Dockerfile installs
 `@openai/codex` globally, `OPENAI_API_KEY` authenticates the Codex CLI, and
-`GITHUB_TOKEN` is used only for cloning/pushing the selected repo and creating
-GitHub issues/PRs. Public repos can be entered in the launch form, but issue/PR
-creation still requires token permission on the selected repo.
+`GITHUB_TOKEN` is used only for cloning/pushing the configured repo and creating
+GitHub issues/PRs. Use a GitHub token with access to `GITHUB_REPO`; the worker
+pushes Codex branches directly to that repository.
 
 ## Important Notes
 
@@ -345,7 +360,7 @@ LINEAR_ASSIGNEE_ID=...
 LINEAR_LABEL_IDS=label_uuid_one,label_uuid_two
 LINEAR_DONE_STATE_ID=...
 GITHUB_TOKEN=...
-GITHUB_REPO=owner/repo # optional default; users can override per meeting
+GITHUB_REPO=owner/repo
 GITHUB_USERNAME=your_github_username
 OPENAI_API_KEY=...
 GITHUB_ISSUE_LABELS=prd-generated,codex-agent

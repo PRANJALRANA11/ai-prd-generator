@@ -78,7 +78,6 @@ export class PostgresSessionStore {
         prd TEXT,
         roadmap TEXT,
         slack_webhook_url TEXT,
-        github_repo TEXT,
         audio_file_path TEXT,
         error TEXT,
         started_at TIMESTAMPTZ NOT NULL,
@@ -90,11 +89,6 @@ export class PostgresSessionStore {
     await this.pool.query(`
       ALTER TABLE bot_sessions
       ADD COLUMN IF NOT EXISTS slack_webhook_url TEXT
-    `);
-
-    await this.pool.query(`
-      ALTER TABLE bot_sessions
-      ADD COLUMN IF NOT EXISTS github_repo TEXT
     `);
 
     await this.pool.query(`
@@ -220,14 +214,13 @@ export class PostgresSessionStore {
           prd,
           roadmap,
           slack_webhook_url,
-          github_repo,
           audio_file_path,
           error,
           started_at,
           ended_at,
           updated_at
         )
-        VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
+        VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10, $11, NOW())
         ON CONFLICT (id) DO UPDATE SET
           meet_url = EXCLUDED.meet_url,
           status = EXCLUDED.status,
@@ -235,7 +228,6 @@ export class PostgresSessionStore {
           prd = EXCLUDED.prd,
           roadmap = EXCLUDED.roadmap,
           slack_webhook_url = EXCLUDED.slack_webhook_url,
-          github_repo = EXCLUDED.github_repo,
           audio_file_path = EXCLUDED.audio_file_path,
           error = EXCLUDED.error,
           started_at = EXCLUDED.started_at,
@@ -250,7 +242,6 @@ export class PostgresSessionStore {
         session.prd ?? null,
         session.roadmap ?? null,
         session.slackWebhookUrl ?? null,
-        session.githubRepo ?? null,
         session.audioFilePath ?? null,
         session.error ?? null,
         session.startedAt,
@@ -683,7 +674,6 @@ function rowToSession(row: Record<string, unknown>): BotSession {
     prd: typeof row.prd === "string" ? row.prd : undefined,
     roadmap: typeof row.roadmap === "string" ? row.roadmap : undefined,
     slackWebhookUrl: typeof row.slack_webhook_url === "string" ? row.slack_webhook_url : undefined,
-    githubRepo: typeof row.github_repo === "string" ? row.github_repo : undefined,
     audioFilePath: typeof row.audio_file_path === "string" ? row.audio_file_path : undefined,
     error: typeof row.error === "string" ? row.error : undefined,
     startedAt: new Date(row.started_at as string | Date),

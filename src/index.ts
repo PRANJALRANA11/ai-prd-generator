@@ -72,8 +72,7 @@ app.get("/api/config", (_req, res) => {
     slackEventsPath: "/api/slack/events",
     slackBotTokenConfigured: Boolean(config.slackBotToken),
     linearConfigured: Boolean(config.linearApiKey && config.linearTeamId),
-    githubAutomationConfigured: Boolean(config.githubToken),
-    defaultGithubRepo: config.githubRepo,
+    githubAutomationConfigured: Boolean(config.githubToken && config.githubRepo),
     codingAgentEnabled: config.codingAgentEnabled,
   });
 });
@@ -165,15 +164,12 @@ app.get("/api/coding/tasks/:id/file", async (req, res) => {
  * that can be used to check status or stop the bot.
  */
 app.post("/api/start-bot", async (req, res) => {
-  const { meetUrl, slackWebhookUrl, githubRepo } = req.body as {
+  const { meetUrl, slackWebhookUrl } = req.body as {
     meetUrl?: string;
     slackWebhookUrl?: string;
-    githubRepo?: string;
   };
   const normalizedMeetUrl = normalizeMeetUrl(meetUrl);
   const normalizedSlackWebhookUrl = parseOptionalWebhook(slackWebhookUrl, res);
-  if (res.headersSent) return;
-  const normalizedGithubRepo = parseOptionalGitHubRepo(githubRepo, res);
   if (res.headersSent) return;
 
   if (!normalizedMeetUrl) {
@@ -190,7 +186,6 @@ app.post("/api/start-bot", async (req, res) => {
     status: "joining",
     transcript: [],
     slackWebhookUrl: normalizedSlackWebhookUrl,
-    githubRepo: normalizedGithubRepo,
     startedAt: new Date(),
     _stopRequested: false,
   };
@@ -200,11 +195,9 @@ app.post("/api/start-bot", async (req, res) => {
   logger.info("Server", "Starting bot session", {
     sessionId,
     meetUrl: normalizedMeetUrl,
-    githubRepo: normalizedGithubRepo,
   });
   appendSessionLog(sessionId, "info", "Bot launch requested", {
     meetUrl: normalizedMeetUrl,
-    githubRepo: normalizedGithubRepo,
     mode: "notetaker",
   });
 
@@ -279,7 +272,6 @@ app.get("/api/status/:sessionId", async (req, res) => {
     sessionId: session.id,
     status: session.status,
     meetUrl: session.meetUrl,
-    githubRepo: session.githubRepo ?? config.githubRepo ?? null,
     startedAt: session.startedAt.toISOString(),
     endedAt: session.endedAt?.toISOString() ?? null,
     transcriptSegments: session.transcript.length,
@@ -548,7 +540,7 @@ async function handleSlackInteractionRequest(req: Request, res: Response): Promi
   if (action.action_id === "approve_linear_tickets") {
     res.status(200).json({
       response_type: "ephemeral",
-      text: "Creating Linear tickets from the approved PRD...",
+      text: "Creating one Linear ticket from the approved PRD...",
     });
 
     handleLinearTicketApproval(action.value, payload).catch((err) => {
@@ -880,8 +872,8 @@ async function buildBotStatusMessage(): Promise<string> {
     latestSession
       ? `*Latest PRD:* \`${latestSession.id}\` · ${latestSession.status} · ${latestSession.transcript.length} transcript segment${latestSession.transcript.length === 1 ? "" : "s"}`
       : "*Latest PRD:* none yet.",
-    latestSession?.githubRepo || config.githubRepo
-      ? `*Coding repo:* \`${latestSession?.githubRepo ?? config.githubRepo}\``
+    config.githubRepo
+      ? `*Coding repo:* \`${config.githubRepo}\``
       : "*Coding repo:* none selected.",
     latestBatch
       ? `*Linear:* ${latestBatch.status}${latestIssues.length ? ` · ${latestIssues.length} ticket${latestIssues.length === 1 ? "" : "s"}` : ""}`
@@ -954,7 +946,7 @@ async function handleLinearTicketApproval(
       await postLinearIssueReply(payload, responseUrl, buildLinearIssueMessage(
         session.id,
         existingIssues,
-        "Linear tickets were already created for this PRD.",
+        "A Linear ticket was already created for this PRD.",
         "in_channel",
       ));
       return;
@@ -976,12 +968,12 @@ async function handleLinearTicketApproval(
 
     loadingMessage = await postLinearTicketLoadingReply(payload, responseUrl, session.id, approvedBy);
 
-    logger.info("LinearApproval", "Generating Linear tickets from approved PRD", {
+    logger.info("LinearApproval", "Generating one Linear ticket from approved PRD", {
       sessionId: session.id,
       approvedBy,
     });
 
-    const ticketSpecs = await generateLinearTicketSpecs(config.geminiApiKey, session.prd);
+    const ticketSpecs = (await generateLinearTicketSpecs(config.geminiApiKey, session.prd)).slice(0, 1);
     const issues = await createLinearIssues(
       {
         apiKey: config.linearApiKey,
@@ -1004,14 +996,14 @@ async function handleLinearTicketApproval(
       approvedAt: new Date(),
     });
 
-    await updateLinearTicketLoadingReply(loadingMessage, `Created ${savedIssues.length} Linear ticket${savedIssues.length === 1 ? "" : "s"} for PRD session ${session.id}.`);
+    await updateLinearTicketLoadingReply(loadingMessage, `Created one Linear ticket for PRD session ${session.id}.`);
 
     await postLinearIssueReply(payload, responseUrl, buildLinearIssueMessage(
       session.id,
       savedIssues,
       [
         approvedBy ? `${approvedBy} approved the PRD.` : undefined,
-        `Created ${savedIssues.length} Linear ticket${savedIssues.length === 1 ? "" : "s"}.`,
+        "Created one Linear ticket.",
         automationTasks.length > 0
           ? `Mirrored ${automationTasks.filter((task) => task.githubIssueUrl).length} GitHub issue${automationTasks.length === 1 ? "" : "s"} for Codex.`
           : undefined,
@@ -1020,7 +1012,7 @@ async function handleLinearTicketApproval(
     ));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    logger.error("LinearApproval", "Failed to create Linear tickets", {
+    logger.error("LinearApproval", "Failed to create Linear ticket", {
       sessionId,
       error: message,
     });
@@ -1033,7 +1025,7 @@ async function handleLinearTicketApproval(
 
     await postSlackInteractionResponse(responseUrl, {
       response_type: "ephemeral",
-      text: `Could not create Linear tickets: ${message}`,
+      text: `Could not create the Linear ticket: ${message}`,
     });
   }
 }
@@ -1138,7 +1130,7 @@ async function createCodingAutomationTasksForIssues(
   session: BotSession,
   issues: LinearIssueRecord[],
 ): Promise<CodingAutomationRecord[]> {
-  const githubConfig = getGitHubConfig(session.githubRepo);
+  const githubConfig = getGitHubConfig();
   const tasks: CodingAutomationRecord[] = [];
 
   for (const issue of issues) {
@@ -1195,12 +1187,11 @@ async function handleGitHubPRMergeApproval(
       return;
     }
 
-    const session = await sessionStore.getSession(task.sessionId);
-    const githubConfig = getGitHubConfig(session?.githubRepo);
+    const githubConfig = getGitHubConfig();
     if (!githubConfig) {
       await postSlackInteractionResponse(responseUrl, {
         response_type: "ephemeral",
-        text: "GitHub automation is not configured. Set GITHUB_TOKEN and provide a repo in the launch form or GITHUB_REPO.",
+        text: "GitHub automation is not configured. Set GITHUB_TOKEN and GITHUB_REPO.",
       });
       return;
     }
@@ -1245,7 +1236,7 @@ async function mirrorPendingGitHubIssues(): Promise<void> {
   for (const task of tasks) {
     const session = await sessionStore.getSession(task.sessionId);
     if (!session) continue;
-    const githubConfig = getGitHubConfig(session.githubRepo);
+    const githubConfig = getGitHubConfig();
     if (!githubConfig) continue;
 
     try {
@@ -1272,12 +1263,12 @@ async function processReadyCodingTasks(): Promise<void> {
   const tasks = await sessionStore.listCodingAutomationTasks(["github_issue_created"], 1);
   for (const task of tasks) {
     if (!task.githubIssueNumber || !task.githubIssueUrl) continue;
-    const session = await sessionStore.getSession(task.sessionId);
-    const codingConfig = getCodingAgentConfig(session?.githubRepo);
-    const githubConfig = getGitHubConfig(session?.githubRepo);
-    if (!codingConfig || !githubConfig) continue;
+    const githubConfig = getGitHubConfig();
+    if (!githubConfig) continue;
 
     try {
+      const codingConfig = getCodingAgentConfig();
+      if (!codingConfig) continue;
       await sessionStore.updateCodingAutomationTask(task.id, "codex_running", { error: "" });
       const result = await runCodingAgentTask(codingConfig, {
         automationId: task.id,
@@ -1330,8 +1321,7 @@ async function syncMergedPullRequests(): Promise<void> {
   const tasks = await sessionStore.listCodingAutomationTasks(["pr_open"], 10);
   for (const task of tasks) {
     if (!task.githubPrNumber) continue;
-    const session = await sessionStore.getSession(task.sessionId);
-    const githubConfig = getGitHubConfig(session?.githubRepo);
+    const githubConfig = getGitHubConfig();
     if (!githubConfig) continue;
     const pullRequest = await getGitHubPullRequest(githubConfig, task.githubPrNumber);
     if (pullRequest.merged) {
@@ -1352,8 +1342,7 @@ async function closeCompletedAutomationTask(
     throw new Error(`Automation task not found: ${automationId}`);
   }
 
-  const session = await sessionStore.getSession(task.sessionId);
-  const githubConfig = getGitHubConfig(session?.githubRepo);
+  const githubConfig = getGitHubConfig();
   if (githubConfig && task.githubIssueNumber) {
     await closeGitHubIssue(
       githubConfig,
@@ -1516,13 +1505,12 @@ function trimForApi(value: string, maxLength: number): string {
   return `${value.slice(0, maxLength - 20)}\n...truncated...`;
 }
 
-function getGitHubConfig(repoOverride?: string): GitHubConfig | null {
-  const repoValue = repoOverride ?? config.githubRepo;
-  if (!config.githubToken || !repoValue) return null;
+function getGitHubConfig(): GitHubConfig | null {
+  if (!config.githubToken || !config.githubRepo) return null;
   try {
     return {
       token: config.githubToken,
-      repo: parseGitHubRepo(repoValue),
+      repo: parseGitHubRepo(config.githubRepo),
     };
   } catch (err) {
     logger.error("GitHubAutomation", "Invalid GitHub automation config", {
@@ -1532,8 +1520,8 @@ function getGitHubConfig(repoOverride?: string): GitHubConfig | null {
   }
 }
 
-function getCodingAgentConfig(repoOverride?: string): CodingAgentConfig | null {
-  const githubConfig = getGitHubConfig(repoOverride);
+function getCodingAgentConfig(): CodingAgentConfig | null {
+  const githubConfig = getGitHubConfig();
   if (!githubConfig || !config.codingAgentEnabled) return null;
 
   return {
@@ -1560,7 +1548,7 @@ function buildGitHubIssueBody(
     `- PRD session: \`${session.id}\``,
     `- PRD item: ${title}`,
     identifier ? `- Linear ticket: ${linearUrl ? `[${identifier}](${linearUrl})` : identifier}` : undefined,
-    (session.githubRepo ?? config.githubRepo) ? `- Coding repo: \`${session.githubRepo ?? config.githubRepo}\`` : undefined,
+    config.githubRepo ? `- Coding repo: \`${config.githubRepo}\`` : undefined,
     `- Meeting: ${session.meetUrl}`,
     "",
     "## Agent Handoff",
@@ -1830,7 +1818,7 @@ function buildLinearIssueMessage(
         type: "header",
         text: {
           type: "plain_text",
-          text: "Linear Tickets Ready",
+          text: "Linear Ticket Ready",
           emoji: true,
         },
       },
@@ -1845,7 +1833,7 @@ function buildLinearIssueMessage(
         type: "section",
         text: {
           type: "mrkdwn",
-          text: issueLines || "No Linear tickets were created.",
+          text: issueLines || "No Linear ticket was created.",
         },
       },
       {
@@ -1873,18 +1861,18 @@ function buildLinearTicketLoadingMessage(
 ): SlackWebhookPayload {
   const leadText = [
     approvedBy ? `${approvedBy} approved the PRD.` : "The PRD was approved.",
-    "Creating Linear tickets now. I will reply here when they are ready.",
+    "Creating one Linear ticket now. I will reply here when it is ready.",
   ].join(" ");
 
   return {
     response_type: "in_channel",
-    text: `Creating Linear tickets for PRD session ${sessionId}...`,
+    text: `Creating one Linear ticket for PRD session ${sessionId}...`,
     blocks: [
       {
         type: "header",
         text: {
           type: "plain_text",
-          text: "Creating Linear Tickets",
+          text: "Creating Linear Ticket",
           emoji: true,
         },
       },
@@ -1900,7 +1888,7 @@ function buildLinearTicketLoadingMessage(
         elements: [
           {
             type: "mrkdwn",
-            text: "Generating implementation-ready tickets from the approved PRD.",
+            text: "Generating one implementation-ready ticket from the approved PRD.",
           },
         ],
       },
@@ -2039,21 +2027,6 @@ function parseOptionalWebhook(value: string | undefined, res: Response): string 
   } catch (err) {
     res.status(400).json({
       error: err instanceof Error ? err.message : "Invalid Slack webhook URL.",
-    });
-    return undefined;
-  }
-}
-
-function parseOptionalGitHubRepo(value: string | undefined, res: Response): string | undefined {
-  const input = value?.trim();
-  if (!input) return undefined;
-
-  try {
-    const repo = parseGitHubRepo(input);
-    return `${repo.owner}/${repo.repo}`;
-  } catch (err) {
-    res.status(400).json({
-      error: err instanceof Error ? err.message : "Invalid GitHub repository.",
     });
     return undefined;
   }
