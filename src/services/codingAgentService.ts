@@ -63,7 +63,9 @@ export async function runCodingAgentTask(
   await writeFile(promptPath, prompt, "utf8");
 
   const command = materializeAgentCommand(config.command, promptPath, branchName, prompt);
+  const commandEnv = buildCodingAgentEnv(command);
   const agentOutput = await runShell(command, taskDir, config.timeoutMs, {
+    env: commandEnv,
     logFilePath: path.join(taskDir, "codex-run.log"),
     logContext: `Codex:${task.linearIdentifier ?? task.githubIssueNumber}`,
   });
@@ -127,7 +129,7 @@ function materializeAgentCommand(
   prompt: string,
 ): string {
   const template = commandTemplate
-    ?? "codex exec --model gpt-4o-mini --full-auto --skip-git-repo-check {prompt}";
+    ?? "codex exec --model gpt-4o-mini --sandbox workspace-write --skip-git-repo-check {prompt}";
 
   const normalizedTemplate = template.replace(/--input-file\s+\{promptFile\}/g, "{prompt}");
 
@@ -198,6 +200,7 @@ function runShell(
   cwd: string,
   timeoutMs: number,
   options: {
+    env?: NodeJS.ProcessEnv;
     logFilePath?: string;
     logContext?: string;
   } = {},
@@ -206,7 +209,7 @@ function runShell(
     const child = spawn(command, {
       cwd,
       shell: true,
-      env: process.env,
+      env: options.env ?? process.env,
       stdio: ["ignore", "pipe", "pipe"],
     });
 
@@ -239,6 +242,28 @@ function runShell(
       }
     });
   });
+}
+
+function buildCodingAgentEnv(command: string): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  const openAiApiKey = env.OPENAI_API_KEY?.trim();
+  const codexApiKey = env.CODEX_API_KEY?.trim();
+  const codexAccessToken = env.CODEX_ACCESS_TOKEN?.trim();
+
+  if (openAiApiKey && !codexApiKey) {
+    env.CODEX_API_KEY = openAiApiKey;
+  }
+  if (codexApiKey && !openAiApiKey) {
+    env.OPENAI_API_KEY = codexApiKey;
+  }
+
+  if (/^\s*codex(\s|$)/.test(command) && !env.CODEX_API_KEY?.trim() && !codexAccessToken) {
+    throw new Error(
+      "Codex authentication is not configured. Set CODEX_API_KEY or OPENAI_API_KEY on Render, then redeploy the service.",
+    );
+  }
+
+  return env;
 }
 
 function streamProcessOutput(

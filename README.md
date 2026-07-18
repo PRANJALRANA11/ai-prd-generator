@@ -270,11 +270,12 @@ GITHUB_TOKEN=...
 GITHUB_REPO=owner/repo
 GITHUB_USERNAME=your_github_username
 OPENAI_API_KEY=...
+CODEX_API_KEY=... # optional; defaults to OPENAI_API_KEY when omitted
 GITHUB_ISSUE_LABELS=prd-generated,codex-agent
 CODING_AGENT_ENABLED=true
 CODING_AGENT_BASE_BRANCH=master
 CODING_AGENT_WORKDIR=/tmp/ai-prd-coding-agent
-CODING_AGENT_COMMAND=codex exec --model gpt-4o-mini --full-auto --skip-git-repo-check {prompt}
+CODING_AGENT_COMMAND=codex exec --model gpt-4o-mini --sandbox workspace-write --skip-git-repo-check {prompt}
 ```
 
 `CODING_AGENT_COMMAND` is intentionally configurable because Codex CLI
@@ -284,10 +285,11 @@ running the command. Older commands using `--input-file {promptFile}` are
 normalized to the current Codex positional prompt format automatically.
 
 On Render, Codex runs inside the same Docker web service. The Dockerfile installs
-`@openai/codex` globally, `OPENAI_API_KEY` authenticates the Codex CLI, and
-`GITHUB_TOKEN` is used only for cloning/pushing the configured repo and creating
-GitHub issues/PRs. Use a GitHub token with access to `GITHUB_REPO`; the worker
-pushes Codex branches directly to that repository.
+`@openai/codex` globally, and the worker passes `OPENAI_API_KEY` through as
+`CODEX_API_KEY` for Codex CLI authentication unless `CODEX_API_KEY` is set
+explicitly. `GITHUB_TOKEN` is used only for cloning/pushing the configured repo
+and creating GitHub issues/PRs. Use a GitHub token with access to `GITHUB_REPO`;
+the worker pushes Codex branches directly to that repository.
 
 ## Important Notes
 
@@ -339,7 +341,7 @@ GEMINI_API_KEY=...
 DEEPGRAM_API_KEY=...
 DATABASE_URL=...
 SLACK_WEBHOOK_URL=...
-PUBLIC_BASE_URL=https://your-render-service.onrender.com
+PUBLIC_BASE_URL=https://ai-prd-generator-fshh.onrender.com
 SLACK_SIGNING_SECRET=...
 SLACK_BOT_TOKEN=...
 LINEAR_API_KEY=...
@@ -363,11 +365,12 @@ GITHUB_TOKEN=...
 GITHUB_REPO=owner/repo
 GITHUB_USERNAME=your_github_username
 OPENAI_API_KEY=...
+CODEX_API_KEY=... # optional; defaults to OPENAI_API_KEY when omitted
 GITHUB_ISSUE_LABELS=prd-generated,codex-agent
 CODING_AGENT_ENABLED=true
 CODING_AGENT_BASE_BRANCH=master
 CODING_AGENT_WORKDIR=/tmp/ai-prd-coding-agent
-CODING_AGENT_COMMAND=codex exec --model gpt-4o-mini --full-auto --skip-git-repo-check {prompt}
+CODING_AGENT_COMMAND=codex exec --model gpt-4o-mini --sandbox workspace-write --skip-git-repo-check {prompt}
 ```
 
 ### 3. Verify

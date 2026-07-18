@@ -25,7 +25,7 @@ services:
       - key: SLACK_WEBHOOK_URL
         sync: false
       - key: PUBLIC_BASE_URL
-        sync: false
+        value: https://ai-prd-generator-fshh.onrender.com
       - key: SLACK_INVITE_URL
         sync: false
       - key: SLACK_SLASH_COMMAND_TOKEN
@@ -56,6 +56,8 @@ services:
         sync: false
       - key: OPENAI_API_KEY
         sync: false
+      - key: CODEX_API_KEY
+        sync: false
       - key: GITHUB_ISSUE_LABELS
         sync: false
       - key: CODING_AGENT_ENABLED
@@ -65,7 +67,7 @@ services:
       - key: CODING_AGENT_WORKDIR
         value: /tmp/ai-prd-coding-agent
       - key: CODING_AGENT_COMMAND
-        value: codex exec --model gpt-4o-mini --full-auto --skip-git-repo-check {prompt}
+        value: codex exec --model gpt-4o-mini --sandbox workspace-write --skip-git-repo-check {prompt}
 
 databases:
   - name: ai-prd-generator-db
