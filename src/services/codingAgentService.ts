@@ -137,12 +137,32 @@ function materializeAgentCommand(
   const template = commandTemplate
     ?? "codex exec --model gpt-4o-mini --sandbox danger-full-access --skip-git-repo-check {prompt}";
 
-  const normalizedTemplate = template.replace(/--input-file\s+\{promptFile\}/g, "{prompt}");
+  const normalizedTemplate = normalizeCodexCommandForRuntime(
+    template.replace(/--input-file\s+\{promptFile\}/g, "{prompt}"),
+  );
 
   return normalizedTemplate
     .replaceAll("{promptFile}", shellQuote(promptPath))
     .replaceAll("{prompt}", shellQuote(prompt))
     .replaceAll("{branch}", shellQuote(branchName));
+}
+
+function normalizeCodexCommandForRuntime(command: string): string {
+  if (!isCodexCommand(command) || !isHostedRuntime()) return command;
+
+  return command
+    .replace(/--full-auto\b/g, "--sandbox danger-full-access")
+    .replace(/--sandbox\s+(?:workspace-write|read-only)\b/g, "--sandbox danger-full-access");
+}
+
+function isCodexCommand(command: string): boolean {
+  return /^\s*codex(?:\s|$)/.test(command);
+}
+
+function isHostedRuntime(): boolean {
+  return process.env.NODE_ENV === "production"
+    || process.env.RENDER === "true"
+    || Boolean(process.env.RENDER_SERVICE_ID);
 }
 
 function buildBranchName(task: CodingAgentTask): string {
@@ -276,7 +296,7 @@ function buildCodingAgentEnv(command: string): NodeJS.ProcessEnv {
     env.OPENAI_API_KEY = codexApiKey;
   }
 
-  if (/^\s*codex(\s|$)/.test(command) && !env.CODEX_API_KEY?.trim() && !codexAccessToken) {
+  if (isCodexCommand(command) && !env.CODEX_API_KEY?.trim() && !codexAccessToken) {
     throw new Error(
       "Codex authentication is not configured. Set CODEX_API_KEY or OPENAI_API_KEY on Render, then redeploy the service.",
     );
