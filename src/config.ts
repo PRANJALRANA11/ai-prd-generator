@@ -1,7 +1,7 @@
 import "dotenv/config";
 
 export interface AppConfig {
-  geminiApiKey: string;
+  openaiApiKey: string;
   deepgramApiKey: string;
   databaseUrl: string;
   slackWebhookUrl: string;
@@ -43,7 +43,7 @@ function requireEnv(name: string): string {
 
 export function loadConfig(): AppConfig {
   return {
-    geminiApiKey: requireEnv("GEMINI_API_KEY"),
+    openaiApiKey: requireEnv("OPENAI_API_KEY"),
     deepgramApiKey: requireEnv("DEEPGRAM_API_KEY"),
     databaseUrl: requireEnv("DATABASE_URL"),
     slackWebhookUrl: requireEnv("SLACK_WEBHOOK_URL"),

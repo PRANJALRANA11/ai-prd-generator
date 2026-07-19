@@ -8,7 +8,7 @@
 
 **SDLC0** is a long-running Node.js/TypeScript service that joins Google Meet
 calls with Playwright, records meeting audio, transcribes speaker turns with
-Deepgram, turns the transcript into a PRD with Gemini, posts the formatted PRD
+Deepgram, turns the transcript into a PRD with OpenAI, posts the formatted PRD
 to Slack, creates one Linear ticket after approval, and can hand that ticket to a
 Codex-powered coding worker.
 
@@ -26,7 +26,7 @@ Codex-powered coding worker.
 POST /api/start-bot
       |
       v
-[ PLAYWRIGHT MEET BOT ] -> [ DEEPGRAM STT ] -> [ GEMINI PRD ]
+[ PLAYWRIGHT MEET BOT ] -> [ DEEPGRAM STT ] -> [ OPENAI PRD ]
       |                                           |
       v                                           v
 [ POSTGRES STATE ] <---------------------- [ SLACK PRD + Q&A ]
@@ -39,7 +39,7 @@ POST /api/start-bot
 
 - **Node.js** ≥ 18
 - A **dedicated Google account** for the bot (don't use your personal account)
-- A **Google Gemini API key** ([Get one here](https://aistudio.google.com/app/apikey))
+- An **OpenAI API key** ([Get one here](https://platform.openai.com/api-keys))
 - A **Deepgram API key** ([Get one here](https://console.deepgram.com/))
 - A **PostgreSQL database** for stateful sessions, transcripts, PRDs, and roadmap updates
 - A **Slack Incoming Webhook URL** ([Create an incoming webhook](https://api.slack.com/messaging/webhooks))
@@ -341,7 +341,8 @@ Create a Render Blueprint from this repo, or create a Docker Web Service and
 Postgres database manually. Use these production environment variables:
 
 ```text
-GEMINI_API_KEY=...
+OPENAI_API_KEY=...
+OPENAI_MODEL=gpt-4o-mini
 DEEPGRAM_API_KEY=...
 DATABASE_URL=...
 SLACK_WEBHOOK_URL=...
@@ -368,7 +369,6 @@ LINEAR_DONE_STATE_ID=...
 GITHUB_TOKEN=...
 GITHUB_REPO=owner/repo
 GITHUB_USERNAME=your_github_username
-OPENAI_API_KEY=...
 CODEX_API_KEY=... # optional; defaults to OPENAI_API_KEY when omitted
 GITHUB_ISSUE_LABELS=prd-generated,codex-agent
 CODING_AGENT_GIT_NAME=SDLC0 Codex Agent
@@ -429,7 +429,7 @@ override the target by changing `RENDER_KEEPALIVE_URL` in the workflow.
 - **Runtime**: Node.js + TypeScript
 - **Browser Automation**: Playwright
 - **Speech-to-Text**: Deepgram Nova-3 with utterances and diarization
-- **LLM**: Google Gemini (gemini-2.5-flash)
+- **LLM**: OpenAI Responses API (`gpt-4o-mini` by default)
 - **Database**: PostgreSQL
 - **Messaging**: Slack incoming webhooks, slash commands, and interactive buttons
 - **Issue Tracking**: Linear GraphQL API

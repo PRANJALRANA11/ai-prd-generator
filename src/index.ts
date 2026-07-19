@@ -592,7 +592,7 @@ app.post("/api/slack/interactions", (req, res) => {
 /**
  * The full pipeline:
  * 1. Join meeting and capture transcript
- * 2. Generate PRD via Gemini
+ * 2. Generate PRD via OpenAI
  * 3. Post to Slack
  */
 async function runPipeline(session: BotSession): Promise<void> {
@@ -626,15 +626,15 @@ async function runPipeline(session: BotSession): Promise<void> {
     // Step 2: Generate PRD
     session.status = "processing";
     await sessionStore.upsertSession(session);
-	    logger.info(ctx, "Step 2/3: Generating PRD with Gemini...", {
+	    logger.info(ctx, "Step 2/3: Generating PRD with OpenAI...", {
 	      sessionId: session.id,
 	      segments: transcript.length,
 	    });
-	    appendSessionLog(session.id, "info", "Generating PRD with Gemini", {
+	    appendSessionLog(session.id, "info", "Generating PRD with OpenAI", {
 	      transcriptSegments: transcript.length,
 	    });
 
-    const prd = await generatePRD(config.geminiApiKey, transcript);
+    const prd = await generatePRD(config.openaiApiKey, transcript);
     session.prd = prd;
     await sessionStore.upsertSession(session);
     const prdVersion = await sessionStore.createPRDVersion(session, {
@@ -766,7 +766,7 @@ async function handleSlackPRDCommand(
     }
 
     const diff = await comparePRDVersions(
-      config.geminiApiKey,
+      config.openaiApiKey,
       olderVersion.prd,
       newerVersion.prd,
       `v${olderVersion.version}`,
@@ -782,7 +782,7 @@ async function handleSlackPRDCommand(
 
   if (roadmapMatch) {
     const roadmapNotes = roadmapMatch[2].trim();
-    const updatedPrd = await updatePRDWithRoadmap(config.geminiApiKey, session.prd!, roadmapNotes);
+    const updatedPrd = await updatePRDWithRoadmap(config.openaiApiKey, session.prd!, roadmapNotes);
     session.roadmap = [session.roadmap, roadmapNotes].filter(Boolean).join("\n\n");
     session.prd = updatedPrd;
     await sessionStore.upsertSession(session);
@@ -809,7 +809,7 @@ async function handleSlackPRDCommand(
   }
 
   const answer = await answerPRDQuestion(
-    config.geminiApiKey,
+    config.openaiApiKey,
     session.prd!,
     text,
     session.transcript,
@@ -973,7 +973,7 @@ async function handleLinearTicketApproval(
       approvedBy,
     });
 
-    const ticketSpecs = (await generateLinearTicketSpecs(config.geminiApiKey, session.prd)).slice(0, 1);
+    const ticketSpecs = (await generateLinearTicketSpecs(config.openaiApiKey, session.prd)).slice(0, 1);
     const issues = await createLinearIssues(
       {
         apiKey: config.linearApiKey,

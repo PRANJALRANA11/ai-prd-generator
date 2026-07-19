@@ -1,7 +1,7 @@
 {
   "name": "ai-prd-generator",
   "version": "1.0.0",
-  "description": "A bot that joins Google Meet calls, transcribes meeting audio, generates a PRD using Google Gemini, and posts it to Slack.",
+  "description": "A bot that joins Google Meet calls, transcribes meeting audio, generates a PRD using OpenAI, and posts it to Slack.",
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
@@ -13,7 +13,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@google/genai": "^1.0.0",
     "dotenv": "^16.4.0",
     "express": "^5.1.0",
     "pg": "^8.22.0",

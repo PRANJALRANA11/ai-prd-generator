@@ -18,8 +18,10 @@ services:
         fromDatabase:
           name: ai-prd-generator-db
           property: connectionString
-      - key: GEMINI_API_KEY
+      - key: OPENAI_API_KEY
         sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4o-mini
       - key: DEEPGRAM_API_KEY
         sync: false
       - key: SLACK_WEBHOOK_URL
@@ -53,8 +55,6 @@ services:
       - key: GITHUB_REPO
         sync: false
       - key: GITHUB_USERNAME
-        sync: false
-      - key: OPENAI_API_KEY
         sync: false
       - key: CODEX_API_KEY
         sync: false
